@@ -1,0 +1,14 @@
+services:
+  routeforge:
+    build: .
+    ports:
+      - "3000:3000"
+    environment:
+      DATA_DIR: /data
+      PORT: 3000
+    volumes:
+      - routeforge-data:/data
+    restart: unless-stopped
+
+volumes:
+  routeforge-data:

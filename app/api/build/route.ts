@@ -1,0 +1,42 @@
+import { NextResponse } from "next/server";
+import { buildLcr2Deck, DeckError } from "@/lib/lcr2";
+import { readVendorDecks } from "@/lib/storage";
+
+export const runtime = "nodejs";
+export const dynamic = "force-dynamic";
+
+function safeFilename(name: string) {
+  const stem = name.replace(/\.csv$/i, "").replace(/[^a-zA-Z0-9._-]+/g, "_").replace(/^_+|_+$/g, "") || "Customer";
+  return `${stem}_USA_LCR2_Rate_Deck.csv`;
+}
+
+export async function POST(request: Request) {
+  try {
+    const form = await request.formData();
+    const customer = form.get("customer");
+    if (!(customer instanceof File)) throw new DeckError("Choose the customer CSV rate deck.");
+    if (!customer.name.toLowerCase().endsWith(".csv")) throw new DeckError("The customer deck must be a CSV file.");
+    if (customer.size > 100 * 1024 * 1024) throw new DeckError("The customer deck exceeds the 100 MB limit.");
+    const markup = String(form.get("markup") ?? "").trim();
+    if (!markup) throw new DeckError("Enter the markup percentage for new codes.");
+    const singleVendor = form.get("singleVendor") === "require2" ? "require2" : "fallback";
+    const decimalValue = form.get("decimals");
+    const decimals = decimalValue === null || decimalValue === "" ? undefined : Number(decimalValue);
+    const vendorTexts = await readVendorDecks();
+    const result = buildLcr2Deck(await customer.text(), vendorTexts, { markup, singleVendor, decimals });
+    const filename = safeFilename(customer.name);
+    return new Response(result.csv, {
+      status: 200,
+      headers: {
+        "Content-Type": "text/csv; charset=utf-8",
+        "Content-Disposition": `attachment; filename="${filename}"`,
+        "Cache-Control": "no-store",
+        "X-LCR-Filename": filename,
+        "X-LCR-Summary": Buffer.from(JSON.stringify(result.summary), "utf8").toString("base64"),
+      },
+    });
+  } catch (error) {
+    const message = error instanceof DeckError ? error.message : "The LCR 2 deck could not be built.";
+    return NextResponse.json({ error: message }, { status: error instanceof DeckError ? 400 : 500 });
+  }
+}
