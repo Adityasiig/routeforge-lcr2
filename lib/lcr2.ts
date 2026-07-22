@@ -5,6 +5,12 @@ type Column = (typeof COLUMNS)[number];
 type RateColumn = (typeof RATE_COLUMNS)[number];
 export type DeckRow = Record<Column, string>;
 
+export type TrafficRow = {
+  code: string;
+  attempts: string;
+  completions: string;
+};
+
 type FixedDecimal = { coefficient: bigint; scale: number };
 type Rate = { value: FixedDecimal; raw: string };
 
@@ -28,11 +34,19 @@ export type BuildSummary = {
   duplicateCustomerRowsDeduped: number;
   invalidVendorRowsIgnored: number;
   duplicateVendorRowsConsolidated: number;
+  trafficRowsRead: number;
+  trafficCodesMatched: number;
+  trafficProtectedCodes: number;
+  trafficDuplicateRowsConsolidated: number;
+  invalidTrafficRowsIgnored: number;
+  unmatchedTrafficCodes: number;
+  positiveTrafficNewCodesSkipped: number;
   validation: {
     exactColumns: boolean;
     duplicateCodes: number;
     missingCustomerCodes: number;
     existingRatesIncreased: number;
+    trafficProtectedCodesChanged: number;
     status: "PASS" | "FAIL";
   };
 };
@@ -116,7 +130,7 @@ function markupFactor(markup: string) {
   return { coefficient: pow10(scale) + percentage.coefficient, scale };
 }
 
-function parseCsvMatrix(text: string) {
+export function parseCsvMatrix(text: string) {
   const rows: string[][] = [];
   let row: string[] = [];
   let field = "";
@@ -156,6 +170,47 @@ function parseCsvMatrix(text: string) {
   return rows;
 }
 
+const TRAFFIC_CODE_HEADERS = new Set(["code", "npanxx", "prefix", "destinationcode"]);
+const TRAFFIC_ATTEMPT_HEADERS = new Set(["attempt", "attempts", "totalattempt", "totalattempts"]);
+const TRAFFIC_COMPLETION_HEADERS = new Set([
+  "completion",
+  "completions",
+  "completed",
+  "connect",
+  "connects",
+  "answered",
+  "complition",
+  "complitions",
+]);
+
+function normalizedTrafficHeader(value: string) {
+  return value.replace(/^\uFEFF/, "").trim().toLowerCase().replace(/[^a-z0-9]+/g, "");
+}
+
+function findTrafficHeader(headers: string[], candidates: Set<string>) {
+  return headers.findIndex((header) => candidates.has(normalizedTrafficHeader(header)));
+}
+
+export function parseTrafficMatrix(matrix: string[][]): TrafficRow[] {
+  const nonEmptyRows = matrix.filter((row) => row.some((cell) => cell.trim() !== ""));
+  if (!nonEmptyRows.length) throw new DeckError("The current traffic file is empty.");
+  const headers = nonEmptyRows[0];
+  const codeIndex = findTrafficHeader(headers, TRAFFIC_CODE_HEADERS);
+  const attemptsIndex = findTrafficHeader(headers, TRAFFIC_ATTEMPT_HEADERS);
+  const completionsIndex = findTrafficHeader(headers, TRAFFIC_COMPLETION_HEADERS);
+  const missing = [
+    codeIndex < 0 ? "code/NPANXX" : "",
+    attemptsIndex < 0 ? "attempts" : "",
+    completionsIndex < 0 ? "completions" : "",
+  ].filter(Boolean);
+  if (missing.length) throw new DeckError(`The current traffic file is missing required columns: ${missing.join(", ")}.`);
+  return nonEmptyRows.slice(1).map((row) => ({
+    code: (row[codeIndex] ?? "").trim(),
+    attempts: (row[attemptsIndex] ?? "").trim(),
+    completions: (row[completionsIndex] ?? "").trim(),
+  }));
+}
+
 export function parseDeck(text: string) {
   const matrix = parseCsvMatrix(text.replace(/^\uFEFF/, ""));
   if (!matrix.length) throw new DeckError("CSV is empty.");
@@ -190,6 +245,13 @@ function validCode(code: string, length: number) {
   return code.length === length && /^\d+$/.test(code);
 }
 
+function trafficCount(raw: string) {
+  const text = raw.trim().replace(/,/g, "");
+  if (!text) return 0;
+  const value = Number(text);
+  return Number.isFinite(value) && value >= 0 ? value : null;
+}
+
 function vendorRate(raw: string): Rate | null {
   const value = parseDecimal(raw);
   return value && value.coefficient > 0n ? { value, raw: raw.trim() } : null;
@@ -207,7 +269,7 @@ export function validateUpload(text: string) {
   return { rows: deck.rows.length };
 }
 
-export function buildLcr2Deck(customerText: string, vendorTexts: string[], options: BuildOptions) {
+export function buildLcr2Deck(customerText: string, vendorTexts: string[], options: BuildOptions, trafficRows: TrafficRow[] = []) {
   if (!vendorTexts.length) throw new DeckError("No saved vendor decks are available.");
   const customerDeck = parseDeck(customerText);
   const codeLength = options.codeLength ?? detectCodeLength(customerDeck.rows);
@@ -225,6 +287,32 @@ export function buildLcr2Deck(customerText: string, vendorTexts: string[], optio
     else if (customer.has(row.code)) duplicateCustomerRows += 1;
     else customer.set(row.code, row);
   }
+
+
+  const traffic = new Map<string, { attempts: number; completions: number }>();
+  let invalidTrafficRows = 0;
+  let duplicateTrafficRows = 0;
+  for (const row of trafficRows) {
+    const code = row.code.trim();
+    const attempts = trafficCount(row.attempts);
+    if (!validCode(code, codeLength)) {
+      invalidTrafficRows += 1;
+      continue;
+    }
+    if (attempts === null) throw new DeckError(`Traffic attempts for code ${code} must be a non-negative number.`);
+    const completions = trafficCount(row.completions) ?? 0;
+    const current = traffic.get(code);
+    if (current) {
+      duplicateTrafficRows += 1;
+      current.attempts += attempts;
+      current.completions += completions;
+    } else {
+      traffic.set(code, { attempts, completions });
+    }
+  }
+  const trafficCodesMatched = Array.from(traffic.keys()).filter((code) => customer.has(code)).length;
+  const trafficProtectedCodes = Array.from(traffic).filter(([code, totals]) => customer.has(code) && totals.attempts > 0).length;
+  const unmatchedTrafficCodes = Array.from(traffic.keys()).filter((code) => !customer.has(code)).length;
 
   const vendorQuotes = new Map<string, Record<RateColumn, Rate[]>>();
   let invalidVendorRows = 0;
@@ -268,6 +356,10 @@ export function buildLcr2Deck(customerText: string, vendorTexts: string[], optio
   let loweredFields = 0;
   for (const [code, originalRow] of customer) {
     const result = { ...originalRow };
+    if ((traffic.get(code)?.attempts ?? 0) > 0) {
+      output.push(result);
+      continue;
+    }
     for (const column of RATE_COLUMNS) {
       const selected = lcr.get(code)?.[column].rate;
       const original = parseDecimal(originalRow[column]);
@@ -284,8 +376,13 @@ export function buildLcr2Deck(customerText: string, vendorTexts: string[], optio
   let newCodesAdded = 0;
   let newCodesSkipped = 0;
   let singleVendorNewCodes = 0;
+  let positiveTrafficNewCodesSkipped = 0;
   const newCodes = Array.from(lcr.keys()).filter((code) => !customer.has(code)).sort();
   for (const code of newCodes) {
+    if ((traffic.get(code)?.attempts ?? 0) > 0) {
+      positiveTrafficNewCodesSkipped += 1;
+      continue;
+    }
     const fields = lcr.get(code)!;
     if (RATE_COLUMNS.some((column) => !fields[column].rate)) {
       newCodesSkipped += 1;
@@ -306,9 +403,13 @@ export function buildLcr2Deck(customerText: string, vendorTexts: string[], optio
   const outputByCode = new Map(validationDeck.rows.map((row) => [row.code, row]));
   const missingCustomerCodes = Array.from(customer.keys()).filter((code) => !outputByCode.has(code)).length;
   let existingRatesIncreased = 0;
+  let trafficProtectedCodesChanged = 0;
   for (const [code, originalRow] of customer) {
     const result = outputByCode.get(code);
     if (!result) continue;
+    if ((traffic.get(code)?.attempts ?? 0) > 0 && RATE_COLUMNS.some((column) => result[column] !== originalRow[column])) {
+      trafficProtectedCodesChanged += 1;
+    }
     for (const column of RATE_COLUMNS) {
       const original = parseDecimal(originalRow[column]);
       const built = parseDecimal(result[column]);
@@ -316,7 +417,7 @@ export function buildLcr2Deck(customerText: string, vendorTexts: string[], optio
     }
   }
   const exactColumns = validationDeck.headers.length === COLUMNS.length && COLUMNS.every((column, index) => validationDeck.headers[index] === column);
-  const passed = exactColumns && duplicateCodes === 0 && missingCustomerCodes === 0 && existingRatesIncreased === 0;
+  const passed = exactColumns && duplicateCodes === 0 && missingCustomerCodes === 0 && existingRatesIncreased === 0 && trafficProtectedCodesChanged === 0;
 
   const summary: BuildSummary = {
     markupPercent: options.markup,
@@ -331,11 +432,19 @@ export function buildLcr2Deck(customerText: string, vendorTexts: string[], optio
     duplicateCustomerRowsDeduped: duplicateCustomerRows,
     invalidVendorRowsIgnored: invalidVendorRows,
     duplicateVendorRowsConsolidated: duplicateVendorRows,
+    trafficRowsRead: trafficRows.length,
+    trafficCodesMatched,
+    trafficProtectedCodes,
+    trafficDuplicateRowsConsolidated: duplicateTrafficRows,
+    invalidTrafficRowsIgnored: invalidTrafficRows,
+    unmatchedTrafficCodes,
+    positiveTrafficNewCodesSkipped,
     validation: {
       exactColumns,
       duplicateCodes,
       missingCustomerCodes,
       existingRatesIncreased,
+      trafficProtectedCodesChanged,
       status: passed ? "PASS" : "FAIL",
     },
   };

@@ -10,9 +10,11 @@
     "build": "next build",
     "start": "next start",
     "test": "node --test --experimental-strip-types tests/lcr2.test.ts",
+    "test:e2e": "node tests/api.e2e.mjs",
     "lint": "eslint . --ignore-pattern .next"
   },
   "dependencies": {
+    "exceljs": "4.4.0",
     "next": "16.2.6",
     "react": "19.2.6",
     "react-dom": "19.2.6"

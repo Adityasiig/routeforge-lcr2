@@ -2,6 +2,8 @@
 
 import { ChangeEvent, DragEvent, useEffect, useMemo, useRef, useState } from "react";
 
+type Variant = "sd" | "convo";
+
 type Vendor = {
   id: string;
   originalName: string;
@@ -23,14 +25,35 @@ type Summary = {
   duplicateCustomerRowsDeduped: number;
   invalidVendorRowsIgnored: number;
   duplicateVendorRowsConsolidated: number;
+  trafficRowsRead: number;
+  trafficCodesMatched: number;
+  trafficProtectedCodes: number;
+  trafficDuplicateRowsConsolidated: number;
+  invalidTrafficRowsIgnored: number;
+  unmatchedTrafficCodes: number;
+  positiveTrafficNewCodesSkipped: number;
   validation: {
     exactColumns: boolean;
     duplicateCodes: number;
     missingCustomerCodes: number;
     existingRatesIncreased: number;
+    trafficProtectedCodesChanged: number;
     status: "PASS" | "FAIL";
   };
 };
+
+const VARIANT_COPY = {
+  sd: {
+    short: "SD",
+    title: "Short Duration",
+    description: "Independent vendor defaults and customer pricing for short-duration traffic.",
+  },
+  convo: {
+    short: "Convo",
+    title: "Conversational",
+    description: "Independent vendor defaults and customer pricing for conversational traffic.",
+  },
+} as const;
 
 function formatBytes(bytes: number) {
   if (bytes < 1024) return `${bytes} B`;
@@ -46,6 +69,10 @@ function DeckDropzone({
   eyebrow,
   title,
   description,
+  accept,
+  extensions,
+  icon,
+  chooseLabel,
 }: {
   id: string;
   multiple?: boolean;
@@ -54,14 +81,18 @@ function DeckDropzone({
   eyebrow: string;
   title: string;
   description: string;
+  accept: string;
+  extensions: string[];
+  icon: string;
+  chooseLabel: string;
 }) {
   const inputRef = useRef<HTMLInputElement>(null);
   const [dragging, setDragging] = useState(false);
 
   const takeFiles = (list: FileList | null) => {
     if (!list) return;
-    const csvFiles = Array.from(list).filter((file) => file.name.toLowerCase().endsWith(".csv"));
-    onFiles(multiple ? csvFiles : csvFiles.slice(0, 1));
+    const accepted = Array.from(list).filter((file) => extensions.some((extension) => file.name.toLowerCase().endsWith(extension)));
+    onFiles(multiple ? accepted : accepted.slice(0, 1));
   };
 
   return (
@@ -69,7 +100,7 @@ function DeckDropzone({
       className={`dropzone ${dragging ? "is-dragging" : ""} ${files.length ? "has-files" : ""}`}
       onDragEnter={(event) => { event.preventDefault(); setDragging(true); }}
       onDragOver={(event) => event.preventDefault()}
-      onDragLeave={(event) => { if (!event.currentTarget.contains(event.relatedTarget as Node)) setDragging(false); }}
+      onDragLeave={(event) => { if (!event.currentTarget.contains(event.relatedTarget as Node | null)) setDragging(false); }}
       onDrop={(event: DragEvent<HTMLDivElement>) => {
         event.preventDefault();
         setDragging(false);
@@ -80,27 +111,29 @@ function DeckDropzone({
         id={id}
         ref={inputRef}
         type="file"
-        accept=".csv,text/csv"
+        accept={accept}
         multiple={multiple}
         onChange={(event: ChangeEvent<HTMLInputElement>) => takeFiles(event.target.files)}
       />
-      <div className="drop-icon" aria-hidden="true">CSV</div>
+      <div className="drop-icon" aria-hidden="true">{icon}</div>
       <div className="drop-copy">
         <span className="eyebrow">{eyebrow}</span>
-        <strong>{files.length ? `${files.length} deck${files.length === 1 ? "" : "s"} selected` : title}</strong>
+        <strong>{files.length ? `${files.length} file${files.length === 1 ? "" : "s"} selected` : title}</strong>
         <p>{files.length ? files.map((file) => file.name).join(" · ") : description}</p>
       </div>
       <button type="button" className="secondary-button" onClick={() => inputRef.current?.click()}>
-        {files.length ? "Change" : "Choose CSV"}
+        {files.length ? "Change" : chooseLabel}
       </button>
     </div>
   );
 }
 
-export default function Home() {
+function VariantWorkspace({ variant }: { variant: Variant }) {
+  const copy = VARIANT_COPY[variant];
   const [vendors, setVendors] = useState<Vendor[]>([]);
   const [vendorFiles, setVendorFiles] = useState<File[]>([]);
   const [customerFiles, setCustomerFiles] = useState<File[]>([]);
+  const [trafficFiles, setTrafficFiles] = useState<File[]>([]);
   const [markup, setMarkup] = useState("");
   const [mode, setMode] = useState<"fallback" | "require2">("fallback");
   const [fixedPrecision, setFixedPrecision] = useState(false);
@@ -111,39 +144,42 @@ export default function Home() {
   const [notice, setNotice] = useState<{ type: "error" | "success"; text: string } | null>(null);
   const [summary, setSummary] = useState<Summary | null>(null);
   const [downloadUrl, setDownloadUrl] = useState<string | null>(null);
-  const [downloadName, setDownloadName] = useState("Customer_USA_LCR2_Rate_Deck.csv");
+  const [downloadName, setDownloadName] = useState(`Customer_USA_${copy.short.toUpperCase()}_LCR2_Rate_Deck.csv`);
 
   useEffect(() => {
     let active = true;
-    fetch("/api/vendors", { cache: "no-store" })
+    fetch(`/api/vendors?variant=${variant}`, { cache: "no-store" })
       .then(async (response) => {
         const payload = await response.json();
-        if (!response.ok) throw new Error(payload.error || "Could not load vendor decks.");
+        if (!response.ok) throw new Error(payload.error || `Could not load ${copy.short} vendor decks.`);
         return payload;
       })
       .then((payload) => { if (active) setVendors(payload.vendors); })
-      .catch((error) => { if (active) setNotice({ type: "error", text: error instanceof Error ? error.message : "Could not load vendor decks." }); })
+      .catch((error) => {
+        if (active) setNotice({ type: "error", text: error instanceof Error ? error.message : `Could not load ${copy.short} vendor decks.` });
+      })
       .finally(() => { if (active) setLoadingVendors(false); });
     return () => { active = false; };
-  }, []);
+  }, [copy.short, variant]);
+
   useEffect(() => () => { if (downloadUrl) URL.revokeObjectURL(downloadUrl); }, [downloadUrl]);
 
   const totalVendorRows = useMemo(() => vendors.reduce((sum, vendor) => sum + vendor.rows, 0), [vendors]);
 
   const saveVendorDefaults = async () => {
-    if (!vendorFiles.length) return setNotice({ type: "error", text: "Choose at least one vendor CSV first." });
+    if (!vendorFiles.length) return setNotice({ type: "error", text: `Choose at least one ${copy.short} vendor CSV first.` });
     setSaving(true);
     setNotice(null);
     const form = new FormData();
+    form.append("variant", variant);
     vendorFiles.forEach((file) => form.append("files", file));
-    form.append("replace", "true");
     try {
       const response = await fetch("/api/vendors", { method: "POST", body: form });
       const payload = await response.json();
       if (!response.ok) throw new Error(payload.error || "Vendor decks could not be saved.");
       setVendors(payload.vendors);
       setVendorFiles([]);
-      setNotice({ type: "success", text: `${payload.vendors.length} vendor deck${payload.vendors.length === 1 ? " is" : "s are"} now saved as the default routing set.` });
+      setNotice({ type: "success", text: `${copy.short} now has ${payload.vendors.length} saved default vendor deck${payload.vendors.length === 1 ? "" : "s"}.` });
     } catch (error) {
       setNotice({ type: "error", text: error instanceof Error ? error.message : "Vendor decks could not be saved." });
     } finally {
@@ -154,7 +190,7 @@ export default function Home() {
   const removeVendor = async (id: string) => {
     setNotice(null);
     try {
-      const response = await fetch(`/api/vendors/${encodeURIComponent(id)}`, { method: "DELETE" });
+      const response = await fetch(`/api/vendors/${encodeURIComponent(id)}?variant=${variant}`, { method: "DELETE" });
       const payload = await response.json();
       if (!response.ok) throw new Error(payload.error || "Vendor deck could not be removed.");
       setVendors(payload.vendors);
@@ -164,7 +200,8 @@ export default function Home() {
   };
 
   const buildDeck = async () => {
-    if (!vendors.length) return setNotice({ type: "error", text: "Save the vendor decks before building a customer deck." });
+    if (!vendors.length) return setNotice({ type: "error", text: `Save the ${copy.short} vendor decks before building.` });
+    if (!trafficFiles.length) return setNotice({ type: "error", text: "Choose the current traffic Excel or CSV file." });
     if (!customerFiles.length) return setNotice({ type: "error", text: "Choose the customer CSV rate deck." });
     if (markup.trim() === "") return setNotice({ type: "error", text: "Enter the markup percentage for new codes." });
     setBuilding(true);
@@ -173,7 +210,9 @@ export default function Home() {
     if (downloadUrl) URL.revokeObjectURL(downloadUrl);
     setDownloadUrl(null);
     const form = new FormData();
+    form.append("variant", variant);
     form.append("customer", customerFiles[0]);
+    form.append("traffic", trafficFiles[0]);
     form.append("markup", markup);
     form.append("singleVendor", mode);
     if (fixedPrecision) form.append("decimals", decimals);
@@ -190,8 +229,8 @@ export default function Home() {
       const blob = await response.blob();
       setSummary(resultSummary);
       setDownloadUrl(URL.createObjectURL(blob));
-      setDownloadName(filenameHeader || downloadName);
-      setNotice({ type: "success", text: "LCR 2 deck built and validated. It is ready to download." });
+      setDownloadName(filenameHeader || `Customer_USA_${copy.short.toUpperCase()}_LCR2_Rate_Deck.csv`);
+      setNotice({ type: "success", text: `${copy.short} LCR 2 deck built, traffic-protected, and validated.` });
     } catch (error) {
       setNotice({ type: "error", text: error instanceof Error ? error.message : "Build failed." });
     } finally {
@@ -200,30 +239,19 @@ export default function Home() {
   };
 
   return (
-    <main>
-      <header className="topbar">
-        <a className="brand" href="#top" aria-label="RouteForge home">
-          <span className="brand-mark">RF</span>
-          <span>RouteForge</span>
-        </a>
-        <div className="topbar-meta">
-          <span className="live-dot" aria-hidden="true" />
-          USA NPANXX · LCR 2
-        </div>
-      </header>
-
-      <section className="hero" id="top">
+    <section className="variant-workspace" aria-label={`${copy.title} rate-deck workspace`}>
+      <div className="workspace-intro">
         <div>
-          <span className="kicker">Wholesale voice pricing console</span>
-          <h1>Turn vendor costs into a protected customer sell deck.</h1>
-          <p>Save your vendor rate decks once. Then price every customer file against the second-lowest route—without ever increasing an existing customer rate.</p>
+          <span className="kicker">Active rate-deck workspace</span>
+          <h2>{copy.short} — {copy.title}</h2>
+          <p>{copy.description}</p>
         </div>
-        <div className="hero-stat">
-          <span>Default vendor set</span>
+        <div className="workspace-count">
           <strong>{loadingVendors ? "—" : vendors.length}</strong>
-          <small>{totalVendorRows.toLocaleString()} source rows ready</small>
+          <span>saved vendors</span>
+          <small>{totalVendorRows.toLocaleString()} source rows</small>
         </div>
-      </section>
+      </div>
 
       {notice && <div className={`notice ${notice.type}`} role={notice.type === "error" ? "alert" : "status"}>{notice.text}</div>}
 
@@ -232,66 +260,88 @@ export default function Home() {
           <div className="panel-heading">
             <div>
               <span className="step-number">01</span>
-              <div>
-                <span className="eyebrow">Set once, reuse anytime</span>
-                <h2>Vendor defaults</h2>
-              </div>
+              <div><span className="eyebrow">Saved separately for {copy.short}</span><h2>Vendor defaults</h2></div>
             </div>
             <span className={`status-pill ${vendors.length ? "ready" : "waiting"}`}>{vendors.length ? "Ready" : "Not set"}</span>
           </div>
 
           <DeckDropzone
-            id="vendor-files"
+            id={`${variant}-vendor-files`}
             multiple
             files={vendorFiles}
             onFiles={setVendorFiles}
-            eyebrow="Vendor cost decks"
+            eyebrow={`${copy.short} vendor cost decks`}
             title="Drop all vendor CSVs here"
-            description="Each file is treated as one vendor. Required columns: code, interrate, intrarate, ijrate."
+            description="Required: code, interrate, intrarate, ijrate. Each file counts as one vendor."
+            accept=".csv,text/csv"
+            extensions={[".csv"]}
+            icon="CSV"
+            chooseLabel="Choose CSVs"
           />
           <button className="primary-button full" type="button" disabled={saving || !vendorFiles.length} onClick={saveVendorDefaults}>
-            {saving ? "Validating and saving…" : vendors.length ? "Replace default vendor set" : "Save as default vendor set"}
+            {saving ? "Validating and saving…" : vendors.length ? `Replace ${copy.short} vendor set` : `Save ${copy.short} vendor set`}
           </button>
 
           <div className="saved-list">
-            <div className="list-heading">
-              <span>Saved vendor decks</span>
-              <span>{vendors.length}</span>
-            </div>
-            {loadingVendors ? (
-              <p className="empty-state">Loading the default set…</p>
-            ) : vendors.length ? vendors.map((vendor, index) => (
+            <div className="list-heading"><span>Saved {copy.short} vendor decks</span><span>{vendors.length}</span></div>
+            {loadingVendors ? <p className="empty-state">Loading the default set…</p> : vendors.length ? vendors.map((vendor, index) => (
               <div className="vendor-row" key={vendor.id}>
                 <span className="vendor-index">{String(index + 1).padStart(2, "0")}</span>
-                <div>
-                  <strong>{vendor.originalName}</strong>
-                  <small>{vendor.rows.toLocaleString()} rows · {formatBytes(vendor.size)}</small>
-                </div>
+                <div><strong>{vendor.originalName}</strong><small>{vendor.rows.toLocaleString()} rows · {formatBytes(vendor.size)}</small></div>
                 <button type="button" className="icon-button" onClick={() => removeVendor(vendor.id)} aria-label={`Remove ${vendor.originalName}`}>Remove</button>
               </div>
-            )) : <p className="empty-state">No defaults yet. Upload two or more vendor decks for true LCR 2 coverage.</p>}
+            )) : <p className="empty-state">No {copy.short} defaults yet. Upload two or more vendor decks for true LCR 2 coverage.</p>}
+          </div>
+        </article>
+
+        <article className="panel traffic-panel">
+          <div className="panel-heading">
+            <div>
+              <span className="step-number">02</span>
+              <div><span className="eyebrow">Required for every build</span><h2>Current Traffic on Codes</h2></div>
+            </div>
+            <span className={`status-pill ${trafficFiles.length ? "ready" : "waiting"}`}>{trafficFiles.length ? "Selected" : "Waiting"}</span>
+          </div>
+          <DeckDropzone
+            id={`${variant}-traffic-file`}
+            files={trafficFiles}
+            onFiles={setTrafficFiles}
+            eyebrow="Traffic protection file"
+            title="Drop Excel or CSV here"
+            description="Required columns: code/NPANXX, attempts, completions. Duplicate code rows are combined."
+            accept=".xlsx,.csv,application/vnd.openxmlformats-officedocument.spreadsheetml.sheet,text/csv"
+            extensions={[".xlsx", ".csv"]}
+            icon="XLSX"
+            chooseLabel="Choose traffic file"
+          />
+          <div className="rule-note traffic-rule">
+            <strong>Attempts lock the complete code</strong>
+            <p>When combined attempts are greater than zero, interrate, intrarate, and ijrate stay exactly as they are in the customer deck.</p>
           </div>
         </article>
 
         <article className="panel customer-panel">
           <div className="panel-heading">
             <div>
-              <span className="step-number">02</span>
-              <div>
-                <span className="eyebrow">Run whenever needed</span>
-                <h2>Customer build</h2>
-              </div>
+              <span className="step-number">03</span>
+              <div><span className="eyebrow">Build whenever needed</span><h2>{copy.short} customer deck</h2></div>
             </div>
-            <span className={`status-pill ${vendors.length ? "ready" : "waiting"}`}>{vendors.length ? "Vendor set linked" : "Waiting for vendors"}</span>
+            <span className={`status-pill ${vendors.length && trafficFiles.length ? "ready" : "waiting"}`}>
+              {vendors.length && trafficFiles.length ? "Ready to price" : "Inputs needed"}
+            </span>
           </div>
 
           <DeckDropzone
-            id="customer-file"
+            id={`${variant}-customer-file`}
             files={customerFiles}
             onFiles={setCustomerFiles}
             eyebrow="Existing customer deck"
             title="Drop the customer CSV here"
-            description="Every valid existing customer code is preserved. Existing prices can only stay the same or go down."
+            description="Every valid existing code is kept. Unlocked prices can only stay the same or go down."
+            accept=".csv,text/csv"
+            extensions={[".csv"]}
+            icon="CSV"
+            chooseLabel="Choose CSV"
           />
 
           <div className="controls-grid">
@@ -324,12 +374,12 @@ export default function Home() {
           </div>
 
           <div className="rule-note">
-            <strong>LCR 2 guardrail</strong>
-            <p>Second-lowest valid vendor rate per field. New codes receive the markup; existing customer rates are never increased.</p>
+            <strong>Traffic first, then LCR 2</strong>
+            <p>Positive-attempt codes are frozen. Remaining existing fields may decrease to LCR 2, and eligible new codes receive the markup.</p>
           </div>
 
           <button className="build-button" type="button" disabled={building || !vendors.length} onClick={buildDeck}>
-            <span>{building ? "Building and validating…" : "Build LCR 2 customer deck"}</span>
+            <span>{building ? "Building and validating…" : `Build ${copy.short} LCR 2 customer deck`}</span>
             <span aria-hidden="true">→</span>
           </button>
         </article>
@@ -340,30 +390,69 @@ export default function Home() {
           <div className="result-title">
             <div className="pass-mark">✓</div>
             <div>
-              <span className="eyebrow">Validation passed</span>
-              <h2>Your switch-ready deck is complete.</h2>
-              <p>{summary.validExistingCodesPreserved.toLocaleString()} existing codes protected · {summary.newCodesAdded.toLocaleString()} new codes added at {summary.markupPercent}% markup.</p>
+              <span className="eyebrow">{copy.short} validation passed</span>
+              <h2>Your traffic-protected deck is complete.</h2>
+              <p>{summary.trafficProtectedCodes.toLocaleString()} traffic codes locked unchanged · {summary.newCodesAdded.toLocaleString()} new codes added at {summary.markupPercent}% markup.</p>
             </div>
           </div>
           <div className="metrics">
-            <div><span>Existing codes</span><strong>{summary.validExistingCodesPreserved.toLocaleString()}</strong></div>
+            <div><span>Traffic-locked codes</span><strong>{summary.trafficProtectedCodes.toLocaleString()}</strong></div>
             <div><span>Rate fields lowered</span><strong>{summary.existingRateFieldsLowered.toLocaleString()}</strong></div>
             <div><span>New codes</span><strong>{summary.newCodesAdded.toLocaleString()}</strong></div>
             <div><span>Rates increased</span><strong>{summary.validation.existingRatesIncreased}</strong></div>
           </div>
           <div className="validation-line">
-            <span>Columns <b>{summary.validation.exactColumns ? "Exact" : "Failed"}</b></span>
+            <span>Protected codes changed <b>{summary.validation.trafficProtectedCodesChanged}</b></span>
             <span>Duplicates <b>{summary.validation.duplicateCodes}</b></span>
             <span>Missing customer codes <b>{summary.validation.missingCustomerCodes}</b></span>
+            <span>Traffic rows combined <b>{summary.trafficDuplicateRowsConsolidated}</b></span>
+            {summary.unmatchedTrafficCodes > 0 && <span className="warning">Unmatched traffic codes <b>{summary.unmatchedTrafficCodes}</b></span>}
+            {summary.positiveTrafficNewCodesSkipped > 0 && <span className="warning">Positive-traffic new codes skipped <b>{summary.positiveTrafficNewCodesSkipped}</b></span>}
             {summary.singleVendorNewCodesAdded > 0 && <span className="warning">No-redundancy new codes <b>{summary.singleVendorNewCodesAdded}</b></span>}
           </div>
-          {downloadUrl && <a className="download-button" href={downloadUrl} download={downloadName}>Download CSV rate deck</a>}
+          {downloadUrl && <a className="download-button" href={downloadUrl} download={downloadName}>Download {copy.short} CSV deck</a>}
         </section>
       )}
+    </section>
+  );
+}
+
+export default function Home() {
+  const [activeVariant, setActiveVariant] = useState<Variant>("sd");
+
+  return (
+    <main>
+      <header className="topbar">
+        <a className="brand" href="#top" aria-label="RouteForge home"><span className="brand-mark">RF</span><span>RouteForge</span></a>
+        <div className="topbar-meta"><span className="live-dot" aria-hidden="true" />USA NPANXX · LCR 2</div>
+      </header>
+
+      <section className="hero" id="top">
+        <div>
+          <span className="kicker">Wholesale voice pricing console</span>
+          <h1>Two rate-deck lanes. One protected pricing workflow.</h1>
+          <p>Keep Short Duration and Conversational pricing completely separate, and freeze every customer code carrying current attempts before LCR 2 is applied.</p>
+        </div>
+        <div className="hero-stat"><span>Independent variants</span><strong>2</strong><small>SD + Convo</small></div>
+      </section>
+
+      <nav className="variant-switcher" aria-label="Choose rate-deck variant">
+        {(["sd", "convo"] as Variant[]).map((variant) => {
+          const copy = VARIANT_COPY[variant];
+          return (
+            <button key={variant} type="button" className={activeVariant === variant ? "active" : ""} onClick={() => setActiveVariant(variant)} aria-pressed={activeVariant === variant}>
+              <span>{copy.short}</span><strong>{copy.title}</strong><small>{variant === "sd" ? "Short-duration pricing" : "Conversational pricing"}</small>
+            </button>
+          );
+        })}
+      </nav>
+
+      <div hidden={activeVariant !== "sd"}><VariantWorkspace variant="sd" /></div>
+      <div hidden={activeVariant !== "convo"}><VariantWorkspace variant="convo" /></div>
 
       <footer>
         <span>RouteForge LCR 2</span>
-        <span>Pricing logic runs on your server. Vendor decks remain in your persistent Coolify volume.</span>
+        <span>SD and Convo vendor defaults remain isolated in your persistent Coolify volume.</span>
       </footer>
     </main>
   );
