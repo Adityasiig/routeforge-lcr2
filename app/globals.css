@@ -87,6 +87,10 @@ main { min-height: 100vh; padding: 0 5vw 48px; }
 .primary-button, .build-button { border: 0; cursor: pointer; font-weight: 800; }
 .primary-button.full { width: 100%; margin-top: 12px; border-radius: 9px; padding: 13px 16px; background: var(--ink); color: white; }
 .primary-button:disabled, .build-button:disabled { opacity: .42; cursor: not-allowed; }
+.vendor-actions { display: grid; gap: 8px; }
+.replace-button { border: 1px solid #dfc9be; background: transparent; color: #8a4b2f; border-radius: 9px; padding: 10px 14px; cursor: pointer; font-size: 10px; font-weight: 750; }
+.replace-button:hover { border-color: #b87656; background: #fff5f0; }
+.replace-button:disabled { opacity: .42; cursor: not-allowed; }
 
 .saved-list { margin-top: 26px; border-top: 1px solid var(--line); }
 .list-heading { display: flex; justify-content: space-between; color: var(--muted); text-transform: uppercase; letter-spacing: .09em; font-size: 9px; font-weight: 800; padding: 16px 0 8px; }

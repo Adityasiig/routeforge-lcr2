@@ -22,11 +22,19 @@ const customer = `code,interrate,intrarate,ijrate
 
 const vendorsForm = new FormData();
 vendorsForm.append("variant", "sd");
+vendorsForm.append("operation", "replace");
 vendorsForm.append("files", new File([vendor1], "vendor-1.csv", { type: "text/csv" }));
-vendorsForm.append("files", new File([vendor2], "vendor-2.csv", { type: "text/csv" }));
 const vendorResponse = await fetch(`${baseUrl}/api/vendors`, { method: "POST", body: vendorsForm });
 if (!vendorResponse.ok) throw new Error(`Vendor upload failed: ${await vendorResponse.text()}`);
 assert.equal(vendorResponse.status, 200);
+
+const addVendorForm = new FormData();
+addVendorForm.append("variant", "sd");
+addVendorForm.append("operation", "add");
+addVendorForm.append("files", new File([vendor2], "vendor-2.csv", { type: "text/csv" }));
+const addVendorResponse = await fetch(`${baseUrl}/api/vendors`, { method: "POST", body: addVendorForm });
+if (!addVendorResponse.ok) throw new Error(`Vendor add failed: ${await addVendorResponse.text()}`);
+assert.equal((await addVendorResponse.json()).vendors.length, 2, "Adding one vendor must preserve the previously saved vendor.");
 
 const convoResponse = await fetch(`${baseUrl}/api/vendors?variant=convo`);
 assert.equal(convoResponse.status, 200);
@@ -64,4 +72,4 @@ assert.equal(summary.positiveTrafficNewCodesSkipped, 1);
 assert.equal(summary.validation.trafficProtectedCodesChanged, 0);
 assert.equal(summary.validation.status, "PASS");
 
-console.log("API E2E PASS: SD/Convo isolation, XLSX parsing, traffic locks, markup, and validation verified.");
+console.log("API E2E PASS: incremental vendor add, SD/Convo isolation, XLSX parsing, traffic locks, markup, and validation verified.");

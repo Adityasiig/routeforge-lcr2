@@ -7,6 +7,8 @@ RouteForge builds two independent USA NPANXX customer sell-deck variants:
 
 Each variant has its own persistent vendor defaults. Every build also requires an existing customer CSV, a current-traffic Excel/CSV file, and a markup percentage.
 
+Vendor files can be added incrementally: upload one vendor today and add more later without replacing the saved set. Replacing the complete set remains available as a separate confirmation-protected action. A saved set cannot contain two files with the same filename; remove the older file before adding its updated replacement.
+
 ## Rate-deck columns
 
 Vendor and customer rate decks must be CSV files containing:

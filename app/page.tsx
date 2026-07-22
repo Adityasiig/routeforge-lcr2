@@ -89,6 +89,10 @@ function DeckDropzone({
   const inputRef = useRef<HTMLInputElement>(null);
   const [dragging, setDragging] = useState(false);
 
+  useEffect(() => {
+    if (!files.length && inputRef.current) inputRef.current.value = "";
+  }, [files.length]);
+
   const takeFiles = (list: FileList | null) => {
     if (!list) return;
     const accepted = Array.from(list).filter((file) => extensions.some((extension) => file.name.toLowerCase().endsWith(extension)));
@@ -139,7 +143,7 @@ function VariantWorkspace({ variant }: { variant: Variant }) {
   const [fixedPrecision, setFixedPrecision] = useState(false);
   const [decimals, setDecimals] = useState("4");
   const [loadingVendors, setLoadingVendors] = useState(true);
-  const [saving, setSaving] = useState(false);
+  const [savingOperation, setSavingOperation] = useState<"add" | "replace" | null>(null);
   const [building, setBuilding] = useState(false);
   const [notice, setNotice] = useState<{ type: "error" | "success"; text: string } | null>(null);
   const [summary, setSummary] = useState<Summary | null>(null);
@@ -166,24 +170,32 @@ function VariantWorkspace({ variant }: { variant: Variant }) {
 
   const totalVendorRows = useMemo(() => vendors.reduce((sum, vendor) => sum + vendor.rows, 0), [vendors]);
 
-  const saveVendorDefaults = async () => {
+  const saveVendorDefaults = async (operation: "add" | "replace") => {
     if (!vendorFiles.length) return setNotice({ type: "error", text: `Choose at least one ${copy.short} vendor CSV first.` });
-    setSaving(true);
+    if (operation === "replace" && vendors.length && !window.confirm(`Replace all ${vendors.length} saved ${copy.short} vendor decks with the selected file${vendorFiles.length === 1 ? "" : "s"}?`)) return;
+    setSavingOperation(operation);
     setNotice(null);
     const form = new FormData();
     form.append("variant", variant);
+    form.append("operation", operation);
     vendorFiles.forEach((file) => form.append("files", file));
     try {
       const response = await fetch("/api/vendors", { method: "POST", body: form });
       const payload = await response.json();
       if (!response.ok) throw new Error(payload.error || "Vendor decks could not be saved.");
       setVendors(payload.vendors);
+      const uploadedCount = vendorFiles.length;
       setVendorFiles([]);
-      setNotice({ type: "success", text: `${copy.short} now has ${payload.vendors.length} saved default vendor deck${payload.vendors.length === 1 ? "" : "s"}.` });
+      setNotice({
+        type: "success",
+        text: operation === "add"
+          ? `Added ${uploadedCount} ${copy.short} vendor deck${uploadedCount === 1 ? "" : "s"}. ${payload.vendors.length} total now saved.`
+          : `Replaced the ${copy.short} vendor set. ${payload.vendors.length} vendor deck${payload.vendors.length === 1 ? " is" : "s are"} now saved.`,
+      });
     } catch (error) {
       setNotice({ type: "error", text: error instanceof Error ? error.message : "Vendor decks could not be saved." });
     } finally {
-      setSaving(false);
+      setSavingOperation(null);
     }
   };
 
@@ -271,16 +283,23 @@ function VariantWorkspace({ variant }: { variant: Variant }) {
             files={vendorFiles}
             onFiles={setVendorFiles}
             eyebrow={`${copy.short} vendor cost decks`}
-            title="Drop all vendor CSVs here"
-            description="Required: code, interrate, intrarate, ijrate. Each file counts as one vendor."
+            title="Drop one or more vendor CSVs here"
+            description="Add one vendor now and more later. Required: code, interrate, intrarate, ijrate."
             accept=".csv,text/csv"
             extensions={[".csv"]}
             icon="CSV"
-            chooseLabel="Choose CSVs"
+            chooseLabel="Choose vendor CSVs"
           />
-          <button className="primary-button full" type="button" disabled={saving || !vendorFiles.length} onClick={saveVendorDefaults}>
-            {saving ? "Validating and saving…" : vendors.length ? `Replace ${copy.short} vendor set` : `Save ${copy.short} vendor set`}
-          </button>
+          <div className="vendor-actions">
+            <button className="primary-button full" type="button" disabled={savingOperation !== null || !vendorFiles.length} onClick={() => saveVendorDefaults("add")}>
+              {savingOperation === "add" ? "Validating and adding…" : vendors.length ? `Add to ${copy.short} vendor set` : `Save first ${copy.short} vendor file${vendorFiles.length === 1 ? "" : "s"}`}
+            </button>
+            {vendors.length > 0 && (
+              <button className="replace-button" type="button" disabled={savingOperation !== null || !vendorFiles.length} onClick={() => saveVendorDefaults("replace")}>
+                {savingOperation === "replace" ? "Replacing full set…" : "Replace entire saved set with selected files"}
+              </button>
+            )}
+          </div>
 
           <div className="saved-list">
             <div className="list-heading"><span>Saved {copy.short} vendor decks</span><span>{vendors.length}</span></div>

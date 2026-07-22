@@ -1,7 +1,7 @@
 import { randomUUID } from "node:crypto";
 import { access, copyFile, mkdir, readFile, rename, unlink, writeFile } from "node:fs/promises";
 import path from "node:path";
-import { validateUpload } from "./lcr2";
+import { DeckError, validateUpload } from "./lcr2";
 import type { DeckVariant } from "./variants";
 
 export type VendorMetadata = {
@@ -96,6 +96,44 @@ export async function replaceVendors(variant: DeckVariant, files: { name: string
   await Promise.all(metadata.map((vendor, index) => writeFile(path.join(vendorDirectory, vendor.storedName), validated[index].text, "utf8")));
   await writeMetadata(variant, metadata);
   await Promise.allSettled(previous.map((vendor) => unlink(path.join(vendorDirectory, vendor.storedName))));
+  return listVendors(variant);
+}
+
+export async function addVendors(variant: DeckVariant, files: { name: string; size: number; text: string }[]) {
+  const validated = files.map((file) => ({ ...file, ...validateUpload(file.text) }));
+  const previous = await readMetadata(variant);
+  if (previous.length + validated.length > 100) throw new DeckError("A saved vendor set can contain a maximum of 100 decks.");
+
+  const existingNames = new Set(previous.map((vendor) => vendor.originalName.trim().toLowerCase()));
+  const incomingNames = new Set<string>();
+  for (const file of validated) {
+    const normalizedName = file.name.trim().toLowerCase();
+    if (existingNames.has(normalizedName)) {
+      throw new DeckError(`${file.name} is already saved. Remove the existing copy before adding an updated file with the same name.`);
+    }
+    if (incomingNames.has(normalizedName)) throw new DeckError(`${file.name} was selected more than once.`);
+    incomingNames.add(normalizedName);
+  }
+
+  const additions: VendorMetadata[] = validated.map((file) => {
+    const id = randomUUID();
+    return {
+      id,
+      originalName: file.name,
+      storedName: `${id}.csv`,
+      size: file.size,
+      rows: file.rows,
+      uploadedAt: new Date().toISOString(),
+    };
+  });
+  const { vendorDirectory } = await ensureStorage(variant);
+  await Promise.all(additions.map((vendor, index) => writeFile(path.join(vendorDirectory, vendor.storedName), validated[index].text, "utf8")));
+  try {
+    await writeMetadata(variant, [...previous, ...additions]);
+  } catch (error) {
+    await Promise.allSettled(additions.map((vendor) => unlink(path.join(vendorDirectory, vendor.storedName))));
+    throw error;
+  }
   return listVendors(variant);
 }
 

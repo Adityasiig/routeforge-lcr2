@@ -1,6 +1,6 @@
 import { NextResponse } from "next/server";
 import { DeckError } from "@/lib/lcr2";
-import { listVendors, replaceVendors } from "@/lib/storage";
+import { addVendors, listVendors, replaceVendors } from "@/lib/storage";
 import { isDeckVariant } from "@/lib/variants";
 
 export const runtime = "nodejs";
@@ -30,7 +30,9 @@ export async function POST(request: Request) {
       if (file.size > 100 * 1024 * 1024) throw new DeckError(`${file.name} exceeds the 100 MB limit.`);
       return { name: file.name, size: file.size, text: await file.text() };
     }));
-    return NextResponse.json({ vendors: await replaceVendors(variant, decks) });
+    const operation = form.get("operation") === "replace" ? "replace" : "add";
+    const vendors = operation === "replace" ? await replaceVendors(variant, decks) : await addVendors(variant, decks);
+    return NextResponse.json({ vendors, operation });
   } catch (error) {
     const message = error instanceof DeckError ? error.message : "Vendor decks could not be saved.";
     return NextResponse.json({ error: message }, { status: error instanceof DeckError ? 400 : 500 });
