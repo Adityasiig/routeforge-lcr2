@@ -402,7 +402,12 @@ export function buildLcr2Deck(customerText: string, vendorTexts: string[], optio
   let invalidTrafficRows = 0;
   let duplicateTrafficRows = 0;
   for (const row of trafficRows) {
-    const code = row.code.trim();
+    let code = row.code.trim();
+    // Traffic exports commonly list USA destinations as 6-digit NPA-NXX, while the
+    // rate decks use 7-digit 1+NPA-NXX. When a traffic code is exactly one digit
+    // short of the deck's code length, prepend the country code "1" so it matches.
+    // NANP area codes never begin with 0 or 1, so this is unambiguous.
+    if (code.length === codeLength - 1 && /^\d+$/.test(code)) code = `1${code}`;
     const attempts = trafficCount(row.attempts);
     if (!validCode(code, codeLength)) {
       invalidTrafficRows += 1;
