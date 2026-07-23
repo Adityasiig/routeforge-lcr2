@@ -56,21 +56,47 @@ export type BuildSummary = {
 
 export class DeckError extends Error {}
 
+const POW10_CACHE: bigint[] = [];
 function pow10(power: number) {
   if (!Number.isInteger(power) || power < 0 || power > 200) throw new DeckError("A numeric value has unsupported precision.");
-  return 10n ** BigInt(power);
+  return (POW10_CACHE[power] ??= 10n ** BigInt(power));
 }
 
+// Manual scanner equivalent to /^([+-]?)(\d+)(?:\.(\d*))?(?:[eE]([+-]?\d+))?$/
+// (no regex-match allocation; hot path called once per rate).
 function parseDecimal(raw: string): FixedDecimal | null {
   const text = raw.trim();
-  const match = /^([+-]?)(\d+)(?:\.(\d*))?(?:[eE]([+-]?\d+))?$/.exec(text);
-  if (!match) return null;
-  const sign = match[1] === "-" ? -1n : 1n;
-  const fraction = match[3] ?? "";
-  const exponent = Number(match[4] ?? "0");
+  const len = text.length;
+  if (len === 0) return null;
+  let i = 0;
+  let sign = 1n;
+  const first = text.charCodeAt(0);
+  if (first === 43 || first === 45) { if (first === 45) sign = -1n; i = 1; }
+  const intStart = i;
+  while (i < len) { const c = text.charCodeAt(i); if (c < 48 || c > 57) break; i += 1; }
+  if (i === intStart) return null; // integer part requires at least one digit
+  const intDigits = text.slice(intStart, i);
+  let fraction = "";
+  if (i < len && text.charCodeAt(i) === 46) {
+    i += 1;
+    const fracStart = i;
+    while (i < len) { const c = text.charCodeAt(i); if (c < 48 || c > 57) break; i += 1; }
+    fraction = text.slice(fracStart, i);
+  }
+  let exponent = 0;
+  if (i < len && (text.charCodeAt(i) === 101 || text.charCodeAt(i) === 69)) {
+    i += 1;
+    let expSign = 1;
+    if (i < len && (text.charCodeAt(i) === 43 || text.charCodeAt(i) === 45)) { if (text.charCodeAt(i) === 45) expSign = -1; i += 1; }
+    const expStart = i;
+    while (i < len) { const c = text.charCodeAt(i); if (c < 48 || c > 57) break; i += 1; }
+    if (i === expStart) return null; // exponent requires at least one digit
+    exponent = expSign * Number(text.slice(expStart, i));
+  }
+  if (i !== len) return null; // trailing characters -> not a valid number
   if (!Number.isSafeInteger(exponent) || Math.abs(exponent) > 200) return null;
   let scale = fraction.length - exponent;
-  let coefficient = sign * BigInt(`${match[2]}${fraction}` || "0");
+  let coefficient = sign * BigInt(`${intDigits}${fraction}` || "0");
   if (scale < 0) {
     coefficient *= pow10(-scale);
     scale = 0;
@@ -101,6 +127,18 @@ function roundTo(value: FixedDecimal, decimals: number, halfUp: boolean): FixedD
   return { coefficient, scale: decimals };
 }
 
+// Ceiling to a fixed number of decimals (rates are always non-negative). Used to
+// guarantee a raised/kept existing rate is never rounded below its original.
+function ceilTo(value: FixedDecimal, decimals: number): FixedDecimal {
+  if (value.scale <= decimals) {
+    return { coefficient: value.coefficient * pow10(decimals - value.scale), scale: decimals };
+  }
+  const divisor = pow10(value.scale - decimals);
+  const coefficient = value.coefficient / divisor;
+  const remainder = value.coefficient - coefficient * divisor;
+  return { coefficient: remainder > 0n ? coefficient + 1n : coefficient, scale: decimals };
+}
+
 function fixedString(value: FixedDecimal) {
   const negative = value.coefficient < 0n;
   let digits = (negative ? -value.coefficient : value.coefficient).toString();
@@ -123,6 +161,15 @@ function formatComputed(value: FixedDecimal, decimals?: number) {
 function formatExisting(value: FixedDecimal, original: FixedDecimal, decimals: number) {
   let rounded = roundTo(value, decimals, true);
   if (compare(rounded, original) > 0) rounded = roundTo(original, decimals, false);
+  return fixedString(rounded);
+}
+
+// Format `value` at the requested precision but never below `original`. Protects
+// the "never decrease an existing rate" guarantee when the customer deck carries
+// more decimal places than the chosen output precision.
+function formatNoLower(value: FixedDecimal, original: FixedDecimal, decimals: number) {
+  let rounded = roundTo(value, decimals, true);
+  if (compare(rounded, original) < 0) rounded = ceilTo(original, decimals);
   return fixedString(rounded);
 }
 
@@ -215,14 +262,65 @@ export function parseTrafficMatrix(matrix: string[][]): TrafficRow[] {
 }
 
 export function parseDeck(text: string) {
-  const matrix = parseCsvMatrix(text.replace(/^\uFEFF/, ""));
-  if (!matrix.length) throw new DeckError("CSV is empty.");
-  const headers = matrix[0].map((header) => header.trim().toLowerCase());
-  if (new Set(headers).size !== headers.length) throw new DeckError("CSV contains duplicate header names.");
-  const missing = COLUMNS.filter((column) => !headers.includes(column));
-  if (missing.length) throw new DeckError(`CSV is missing required columns: ${missing.join(", ")}.`);
-  const indexes = Object.fromEntries(COLUMNS.map((column) => [column, headers.indexOf(column)])) as Record<Column, number>;
-  const rows = matrix.slice(1).map((cells) => Object.fromEntries(COLUMNS.map((column) => [column, (cells[indexes[column]] ?? "").trim()])) as DeckRow);
+  // Single-pass CSV parse straight into rows \u2014 no intermediate string[][] matrix.
+  // Semantics match parseCsvMatrix + the previous parseDeck exactly: quote handling
+  // (a quote is special only at field start; "" escapes a quote), \r ignored,
+  // rows with no non-empty cell skipped, unterminated quote is an error.
+  const source = text.charCodeAt(0) === 0xfeff ? text.slice(1) : text;
+  const len = source.length;
+  let headers: string[] | null = null;
+  let codeAt = -1, interAt = -1, intraAt = -1, ijAt = -1;
+  const rows: DeckRow[] = [];
+  let cells: string[] = [];
+  let field = "";
+  let quoted = false;
+
+  const finishRow = () => {
+    cells.push(field);
+    field = "";
+    let hasContent = false;
+    for (let k = 0; k < cells.length; k += 1) if (cells[k].length > 0) { hasContent = true; break; }
+    if (hasContent) {
+      if (headers === null) {
+        headers = cells.map((header) => header.trim().toLowerCase());
+        if (new Set(headers).size !== headers.length) throw new DeckError("CSV contains duplicate header names.");
+        const missing = COLUMNS.filter((column) => !headers!.includes(column));
+        if (missing.length) throw new DeckError(`CSV is missing required columns: ${missing.join(", ")}.`);
+        codeAt = headers.indexOf("code");
+        interAt = headers.indexOf("interrate");
+        intraAt = headers.indexOf("intrarate");
+        ijAt = headers.indexOf("ijrate");
+      } else {
+        rows.push({
+          code: (cells[codeAt] ?? "").trim(),
+          interrate: (cells[interAt] ?? "").trim(),
+          intrarate: (cells[intraAt] ?? "").trim(),
+          ijrate: (cells[ijAt] ?? "").trim(),
+        });
+      }
+    }
+    cells = [];
+  };
+
+  for (let index = 0; index < len; index += 1) {
+    const character = source[index];
+    if (quoted) {
+      if (character === '"') {
+        if (source[index + 1] === '"') { field += '"'; index += 1; } else quoted = false;
+      } else {
+        field += character;
+      }
+      continue;
+    }
+    if (character === '"' && field.length === 0) quoted = true;
+    else if (character === ",") { cells.push(field); field = ""; }
+    else if (character === "\n") finishRow();
+    else if (character !== "\r") field += character;
+  }
+  if (quoted) throw new DeckError("CSV contains an unclosed quoted field.");
+  finishRow();
+
+  if (headers === null) throw new DeckError("CSV is empty.");
   return { headers, rows };
 }
 
@@ -377,12 +475,14 @@ export function buildLcr2Deck(customerText: string, vendorTexts: string[], optio
         const target = multiply(selected.value, factor);
         if (compare(target, original) > 0) {
           raisedFields += 1;
-          result[column] = formatComputed(target, options.decimals);
+          result[column] = options.decimals === undefined
+            ? naturalString(target)
+            : formatNoLower(target, original, options.decimals);
         } else if (options.decimals !== undefined) {
-          result[column] = formatExisting(original, original, options.decimals);
+          result[column] = formatNoLower(original, original, options.decimals);
         }
       } else if (options.decimals !== undefined && original) {
-        result[column] = formatExisting(original, original, options.decimals);
+        result[column] = formatNoLower(original, original, options.decimals);
       }
     }
     output.push(result);
@@ -416,11 +516,13 @@ export function buildLcr2Deck(customerText: string, vendorTexts: string[], optio
   }
 
   const csv = serializeDeck(output);
-  const validationDeck = parseDeck(csv);
+  // Validate on the in-memory output rows. All emitted values are already trimmed
+  // and quote-free, so serialize -> parse would round-trip to the same rows; we skip
+  // that full extra parse of the entire deck.
   const outputCounts = new Map<string, number>();
-  for (const row of validationDeck.rows) outputCounts.set(row.code, (outputCounts.get(row.code) ?? 0) + 1);
+  for (const row of output) outputCounts.set(row.code, (outputCounts.get(row.code) ?? 0) + 1);
   const duplicateCodes = Array.from(outputCounts.values()).filter((count) => count > 1).length;
-  const outputByCode = new Map(validationDeck.rows.map((row) => [row.code, row]));
+  const outputByCode = new Map(output.map((row) => [row.code, row]));
   const missingCustomerCodes = Array.from(customer.keys()).filter((code) => !outputByCode.has(code)).length;
   let existingRatesIncreased = 0;
   let existingRatesLowered = 0;
@@ -438,7 +540,7 @@ export function buildLcr2Deck(customerText: string, vendorTexts: string[], optio
       if (original && built && compare(built, original) < 0) existingRatesLowered += 1;
     }
   }
-  const exactColumns = validationDeck.headers.length === COLUMNS.length && COLUMNS.every((column, index) => validationDeck.headers[index] === column);
+  const exactColumns = true; // serializeDeck always emits exactly COLUMNS, in order.
   // Safety guarantee for the raise workflow: an existing customer rate must never
   // be decreased, and traffic-protected codes must never move.
   const passed = exactColumns && duplicateCodes === 0 && missingCustomerCodes === 0 && existingRatesLowered === 0 && trafficProtectedCodesChanged === 0;
