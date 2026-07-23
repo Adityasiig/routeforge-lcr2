@@ -3,7 +3,6 @@ import { randomUUID } from "node:crypto";
 import { DeckError } from "@/lib/lcr2";
 import { createBuildJob } from "@/lib/build-jobs";
 import { getVendorDeckPaths } from "@/lib/storage";
-import { parseTrafficUpload } from "@/lib/traffic";
 import { isDeckVariant, variantLabel } from "@/lib/variants";
 
 export const runtime = "nodejs";
@@ -26,6 +25,10 @@ export async function POST(request: Request) {
     if (customer.size > 100 * 1024 * 1024) throw new DeckError("The customer deck exceeds the 100 MB limit.");
     const traffic = form.get("traffic");
     if (!(traffic instanceof File)) throw new DeckError("Choose the current traffic Excel or CSV file.");
+    const trafficName = traffic.name.toLowerCase();
+    if (!trafficName.endsWith(".csv") && !trafficName.endsWith(".xlsx")) {
+      throw new DeckError("The current traffic file must be an Excel .xlsx file or CSV.");
+    }
     if (traffic.size > 100 * 1024 * 1024) throw new DeckError("The current traffic file exceeds the 100 MB limit.");
     const markup = String(form.get("markup") ?? "").trim();
     if (!markup) throw new DeckError("Enter the markup percentage for new codes.");
@@ -33,16 +36,18 @@ export async function POST(request: Request) {
     const decimalValue = form.get("decimals");
     const decimals = decimalValue === null || decimalValue === "" ? undefined : Number(decimalValue);
     const filename = safeFilename(customer.name, variant);
-    const [vendorPaths, trafficRows, customerText] = await Promise.all([
-      getVendorDeckPaths(variant),
-      parseTrafficUpload(traffic),
-      customer.text(),
-    ]);
+
+    // IMPORTANT: do NOT parse the customer CSV or the traffic workbook here.
+    // The request handler must return quickly so the reverse proxy (Cloudflare)
+    // never hits its ~100s timeout. We only look up the saved vendor paths (cheap),
+    // then stream the raw uploads to disk inside createBuildJob. All parsing
+    // (ExcelJS / CSV) and the LCR 2 computation happen in the background worker.
+    const vendorPaths = await getVendorDeckPaths(variant);
     const job = await createBuildJob({
       variant,
       filename,
-      customerText,
-      trafficRows,
+      customer,
+      traffic,
       vendorPaths,
       options: { markup, singleVendor, decimals },
     });

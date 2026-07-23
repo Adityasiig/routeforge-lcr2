@@ -1,10 +1,22 @@
 import { randomUUID } from "node:crypto";
 import { spawn } from "node:child_process";
+import { createWriteStream } from "node:fs";
 import { mkdir, readFile, readdir, rename, rm, stat, writeFile } from "node:fs/promises";
+import { Readable } from "node:stream";
+import { pipeline } from "node:stream/promises";
 import path from "node:path";
-import { DeckError, type BuildOptions, type BuildSummary, type TrafficRow } from "./lcr2";
+import { DeckError, type BuildOptions, type BuildSummary } from "./lcr2";
 import { getDataRoot } from "./storage";
 import type { DeckVariant } from "./variants";
+
+// Side-effect import ONLY. The traffic workbook is now parsed inside
+// workers/build-job.mjs, which is copied into the image as a raw file and is
+// invisible to Next.js's dependency tracer. Without this import, `exceljs`
+// (and its transitive deps) would be pruned from `.next/standalone/node_modules`
+// and the worker would crash at runtime with MODULE_NOT_FOUND: exceljs.
+// build-jobs.ts IS traced (it is imported by the /api/build route), so importing
+// exceljs here forces it — and everything it needs — into the runtime bundle.
+import "exceljs";
 
 export type BuildJobState = "queued" | "running" | "completed" | "failed";
 
@@ -25,6 +37,7 @@ type BuildJobManifest = {
   jobDirectory: string;
   customerPath: string;
   trafficPath: string;
+  trafficFilename: string;
   vendorPaths: string[];
   outputPath: string;
   statusPath: string;
@@ -53,6 +66,15 @@ async function writeJsonAtomic(filePath: string, value: unknown) {
   const temporaryPath = `${filePath}.${randomUUID()}.tmp`;
   await writeFile(temporaryPath, JSON.stringify(value), "utf8");
   await rename(temporaryPath, filePath);
+}
+
+// Stream a web File straight to disk without ever buffering or decoding it in
+// memory. This is the key change: a 100 MB customer CSV or a large .xlsx is
+// persisted as raw bytes on the request path (fast, I/O-bound) and parsed later
+// by the worker, instead of being decoded/parsed inside the HTTP handler.
+async function streamFileToDisk(file: File, destinationPath: string) {
+  const webStream = file.stream() as unknown as ReadableStream<Uint8Array>;
+  await pipeline(Readable.fromWeb(webStream), createWriteStream(destinationPath));
 }
 
 async function readStatusFile(statusPath: string): Promise<BuildJobStatus | null> {
@@ -126,8 +148,8 @@ function launchWorker(manifestPath: string, statusPath: string) {
 export async function createBuildJob(input: {
   variant: DeckVariant;
   filename: string;
-  customerText: string;
-  trafficRows: TrafficRow[];
+  customer: File;
+  traffic: File;
   vendorPaths: string[];
   options: BuildOptions;
 }) {
@@ -140,7 +162,8 @@ export async function createBuildJob(input: {
   const { directory, statusPath, outputPath } = jobPaths(jobId);
   await mkdir(directory, { recursive: true });
   const customerPath = path.join(directory, "customer.csv");
-  const trafficPath = path.join(directory, "traffic.json");
+  const trafficExtension = input.traffic.name.toLowerCase().endsWith(".xlsx") ? "xlsx" : "csv";
+  const trafficPath = path.join(directory, `traffic.${trafficExtension}`);
   const manifestPath = path.join(directory, "manifest.json");
   const createdAt = new Date().toISOString();
   const status: BuildJobStatus = {
@@ -156,6 +179,7 @@ export async function createBuildJob(input: {
     jobDirectory: directory,
     customerPath,
     trafficPath,
+    trafficFilename: input.traffic.name,
     vendorPaths: input.vendorPaths,
     outputPath,
     statusPath,
@@ -164,12 +188,15 @@ export async function createBuildJob(input: {
     options: input.options,
     createdAt,
   };
+  // Publish the "queued" status first so the client can start polling, then
+  // stream the raw uploads to disk (no parsing), then write the manifest and
+  // launch the worker. Streaming raw bytes is fast; the heavy work is deferred.
+  await writeJsonAtomic(statusPath, status);
   await Promise.all([
-    writeFile(customerPath, input.customerText, "utf8"),
-    writeFile(trafficPath, JSON.stringify(input.trafficRows), "utf8"),
-    writeJsonAtomic(statusPath, status),
-    writeJsonAtomic(manifestPath, manifest),
+    streamFileToDisk(input.customer, customerPath),
+    streamFileToDisk(input.traffic, trafficPath),
   ]);
+  await writeJsonAtomic(manifestPath, manifest);
   launchWorker(manifestPath, statusPath);
   return status;
 }
