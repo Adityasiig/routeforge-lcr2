@@ -1,4 +1,5 @@
 import { NextResponse } from "next/server";
+import { randomUUID } from "node:crypto";
 import { buildLcr2Deck, DeckError } from "@/lib/lcr2";
 import { readVendorDecks } from "@/lib/storage";
 import { parseTrafficUpload } from "@/lib/traffic";
@@ -13,6 +14,7 @@ function safeFilename(name: string, variant: "sd" | "convo") {
 }
 
 export async function POST(request: Request) {
+  const requestId = randomUUID().slice(0, 8);
   try {
     const form = await request.formData();
     const variant = form.get("variant");
@@ -44,6 +46,7 @@ export async function POST(request: Request) {
     });
   } catch (error) {
     const message = error instanceof DeckError ? error.message : "The LCR 2 deck could not be built.";
-    return NextResponse.json({ error: message }, { status: error instanceof DeckError ? 400 : 500 });
+    if (!(error instanceof DeckError)) console.error(`[LCR2 build ${requestId}]`, error);
+    return NextResponse.json({ error: message, requestId }, { status: error instanceof DeckError ? 400 : 500 });
   }
 }

@@ -117,3 +117,17 @@ test("completion data never disables a valid attempts lock", () => {
   assert.equal(protectedRow?.interrate, "0.0200");
   assert.equal(result.summary.trafficProtectedCodes, 1);
 });
+
+test("incremental best-two selection preserves equal vendor quotes", () => {
+  const oneCustomer = "code,interrate,intrarate,ijrate\n1123456,0.0500,0.0500,0.0500\n";
+  const vendors = ["0.0100", "0.0100", "0.0090"].map((rate) => (
+    `code,interrate,intrarate,ijrate\n1123456,${rate},${rate},${rate}\n`
+  ));
+  const result = buildLcr2Deck(oneCustomer, vendors, { markup: "40", singleVendor: "require2" });
+  assert.deepEqual(parseDeck(result.csv).rows[0], {
+    code: "1123456",
+    interrate: "0.0100",
+    intrarate: "0.0100",
+    ijrate: "0.0100",
+  });
+});

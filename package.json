@@ -11,6 +11,7 @@
     "start": "next start",
     "test": "node --test --experimental-strip-types tests/lcr2.test.ts",
     "test:e2e": "node tests/api.e2e.mjs",
+    "test:large": "node --max-old-space-size=512 --experimental-strip-types tests/large-build.benchmark.mjs",
     "lint": "eslint . --ignore-pattern .next"
   },
   "dependencies": {

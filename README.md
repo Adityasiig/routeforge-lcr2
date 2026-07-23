@@ -65,3 +65,13 @@ Because rate and traffic files are commercially sensitive, protect the applicati
 - Maximum saved vendor files per variant: 100.
 - `fallback` accepts a sole vendor quote and reports new codes without redundancy.
 - `require2` keeps existing fields unchanged and omits new codes without two eligible quotes in every field.
+
+## Large-deck verification
+
+The LCR accumulator retains only the lowest and second-lowest quote per code and rate field instead of retaining every vendor quote. This keeps million-row builds within a predictable memory envelope without changing LCR 2 selection, including equal-priced quotes from different vendors.
+
+Run the synthetic six-vendor benchmark with:
+
+```bash
+BENCHMARK_ROWS=200000 BENCHMARK_VENDORS=6 npm run test:large
+```

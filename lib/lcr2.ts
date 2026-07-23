@@ -13,6 +13,7 @@ export type TrafficRow = {
 
 type FixedDecimal = { coefficient: bigint; scale: number };
 type Rate = { value: FixedDecimal; raw: string };
+type BestTwo = { lowest: Rate | null; second: Rate | null };
 
 export type BuildOptions = {
   markup: string;
@@ -257,10 +258,18 @@ function vendorRate(raw: string): Rate | null {
   return value && value.coefficient > 0n ? { value, raw: raw.trim() } : null;
 }
 
-function chooseLcr(quotes: Rate[], mode: BuildOptions["singleVendor"]) {
-  quotes.sort((left, right) => compare(left.value, right.value));
-  if (quotes.length >= 2) return { rate: quotes[1], single: false };
-  if (quotes.length === 1 && mode === "fallback") return { rate: quotes[0], single: true };
+function addQuote(pair: BestTwo, candidate: Rate) {
+  if (!pair.lowest || compare(candidate.value, pair.lowest.value) < 0) {
+    pair.second = pair.lowest;
+    pair.lowest = candidate;
+  } else if (!pair.second || compare(candidate.value, pair.second.value) < 0) {
+    pair.second = candidate;
+  }
+}
+
+function chooseLcr(pair: BestTwo, mode: BuildOptions["singleVendor"]) {
+  if (pair.second) return { rate: pair.second, single: false };
+  if (pair.lowest && mode === "fallback") return { rate: pair.lowest, single: true };
   return { rate: null, single: false };
 }
 
@@ -314,19 +323,18 @@ export function buildLcr2Deck(customerText: string, vendorTexts: string[], optio
   const trafficProtectedCodes = Array.from(traffic).filter(([code, totals]) => customer.has(code) && totals.attempts > 0).length;
   const unmatchedTrafficCodes = Array.from(traffic.keys()).filter((code) => !customer.has(code)).length;
 
-  const vendorQuotes = new Map<string, Record<RateColumn, Rate[]>>();
+  const vendorQuotes = new Map<string, Record<RateColumn, BestTwo>>();
   let invalidVendorRows = 0;
   let duplicateVendorRows = 0;
   for (const vendorText of vendorTexts) {
     const vendorDeck = parseDeck(vendorText);
     const aggregate = new Map<string, Partial<Record<RateColumn, Rate>>>();
-    const seen = new Map<string, number>();
     for (const row of vendorDeck.rows) {
       if (!validCode(row.code, codeLength)) {
         invalidVendorRows += 1;
         continue;
       }
-      seen.set(row.code, (seen.get(row.code) ?? 0) + 1);
+      if (aggregate.has(row.code)) duplicateVendorRows += 1;
       const fields = aggregate.get(row.code) ?? {};
       for (const column of RATE_COLUMNS) {
         const candidate = vendorRate(row[column]);
@@ -335,21 +343,15 @@ export function buildLcr2Deck(customerText: string, vendorTexts: string[], optio
       }
       aggregate.set(row.code, fields);
     }
-    duplicateVendorRows += Array.from(seen.values()).reduce((sum, count) => sum + Math.max(0, count - 1), 0);
     for (const [code, fields] of aggregate) {
-      const destination = vendorQuotes.get(code) ?? { interrate: [], intrarate: [], ijrate: [] };
-      for (const column of RATE_COLUMNS) if (fields[column]) destination[column].push(fields[column]!);
+      const destination = vendorQuotes.get(code) ?? {
+        interrate: { lowest: null, second: null },
+        intrarate: { lowest: null, second: null },
+        ijrate: { lowest: null, second: null },
+      };
+      for (const column of RATE_COLUMNS) if (fields[column]) addQuote(destination[column], fields[column]!);
       vendorQuotes.set(code, destination);
     }
-  }
-
-  const lcr = new Map<string, Record<RateColumn, { rate: Rate | null; single: boolean }>>();
-  for (const [code, fields] of vendorQuotes) {
-    lcr.set(code, {
-      interrate: chooseLcr(fields.interrate, options.singleVendor),
-      intrarate: chooseLcr(fields.intrarate, options.singleVendor),
-      ijrate: chooseLcr(fields.ijrate, options.singleVendor),
-    });
   }
 
   const output: DeckRow[] = [];
@@ -361,7 +363,8 @@ export function buildLcr2Deck(customerText: string, vendorTexts: string[], optio
       continue;
     }
     for (const column of RATE_COLUMNS) {
-      const selected = lcr.get(code)?.[column].rate;
+      const pair = vendorQuotes.get(code)?.[column];
+      const selected = pair ? chooseLcr(pair, options.singleVendor).rate : null;
       const original = parseDecimal(originalRow[column]);
       if (selected && original && compare(selected.value, original) < 0) {
         loweredFields += 1;
@@ -377,13 +380,18 @@ export function buildLcr2Deck(customerText: string, vendorTexts: string[], optio
   let newCodesSkipped = 0;
   let singleVendorNewCodes = 0;
   let positiveTrafficNewCodesSkipped = 0;
-  const newCodes = Array.from(lcr.keys()).filter((code) => !customer.has(code)).sort();
+  const newCodes = Array.from(vendorQuotes.keys()).filter((code) => !customer.has(code)).sort();
   for (const code of newCodes) {
     if ((traffic.get(code)?.attempts ?? 0) > 0) {
       positiveTrafficNewCodesSkipped += 1;
       continue;
     }
-    const fields = lcr.get(code)!;
+    const pairs = vendorQuotes.get(code)!;
+    const fields = {
+      interrate: chooseLcr(pairs.interrate, options.singleVendor),
+      intrarate: chooseLcr(pairs.intrarate, options.singleVendor),
+      ijrate: chooseLcr(pairs.ijrate, options.singleVendor),
+    };
     if (RATE_COLUMNS.some((column) => !fields[column].rate)) {
       newCodesSkipped += 1;
       continue;

@@ -61,6 +61,24 @@ function formatBytes(bytes: number) {
   return `${(bytes / 1024 / 1024).toFixed(1)} MB`;
 }
 
+async function buildErrorMessage(response: Response) {
+  let serverMessage = "";
+  const contentType = response.headers.get("content-type") ?? "";
+  if (contentType.includes("application/json")) {
+    const payload = await response.json().catch(() => null) as { error?: string; requestId?: string } | null;
+    if (payload?.error) serverMessage = payload.requestId ? `${payload.error} Reference: ${payload.requestId}.` : payload.error;
+  } else {
+    const body = await response.text().catch(() => "");
+    if (body && body.length < 300 && !/<(?:!doctype|html|body)/i.test(body)) serverMessage = body.trim();
+  }
+  if (serverMessage) return serverMessage;
+  if ([502, 503, 504, 524].includes(response.status)) {
+    return `The build gateway timed out or lost the application connection (HTTP ${response.status}). Retry once; if it repeats, check the latest application logs.`;
+  }
+  if (response.status === 413) return "One of the uploaded files is larger than the server or proxy upload limit (HTTP 413).";
+  return `The server could not complete the build (HTTP ${response.status}). Check the latest application logs.`;
+}
+
 function DeckDropzone({
   id,
   multiple,
@@ -231,8 +249,7 @@ function VariantWorkspace({ variant }: { variant: Variant }) {
     try {
       const response = await fetch("/api/build", { method: "POST", body: form });
       if (!response.ok) {
-        const payload = await response.json().catch(() => ({ error: "Build failed." }));
-        throw new Error(payload.error || "Build failed.");
+        throw new Error(await buildErrorMessage(response));
       }
       const summaryHeader = response.headers.get("X-LCR-Summary");
       const filenameHeader = response.headers.get("X-LCR-Filename");
@@ -244,7 +261,13 @@ function VariantWorkspace({ variant }: { variant: Variant }) {
       setDownloadName(filenameHeader || `Customer_USA_${copy.short.toUpperCase()}_LCR2_Rate_Deck.csv`);
       setNotice({ type: "success", text: `${copy.short} LCR 2 deck built, traffic-protected, and validated.` });
     } catch (error) {
-      setNotice({ type: "error", text: error instanceof Error ? error.message : "Build failed." });
+      const message = error instanceof Error ? error.message : "Build failed.";
+      setNotice({
+        type: "error",
+        text: /failed to fetch|networkerror|load failed/i.test(message)
+          ? "The connection to the build server was interrupted. Retry once; if it repeats, check whether the application restarted or ran out of memory."
+          : message,
+      });
     } finally {
       setBuilding(false);
     }
