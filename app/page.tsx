@@ -484,6 +484,7 @@ function VariantWorkspace({ variant }: { variant: Variant }) {
           </div>
         </article>
 
+        <div className="workspace-right">
         <article className="panel customer-panel">
           <div className="panel-heading">
             <div>
@@ -547,9 +548,7 @@ function VariantWorkspace({ variant }: { variant: Variant }) {
             <span aria-hidden="true">→</span>
           </button>
         </article>
-      </section>
-
-      <article className="panel vendor-lcr2-panel">
+        <article className="panel vendor-lcr2-panel">
         <div className="panel-heading">
           <div>
             <span className="step-number">04</span>
@@ -610,7 +609,9 @@ function VariantWorkspace({ variant }: { variant: Variant }) {
             {vlDownloadUrl && <a className="download-button" href={vlDownloadUrl} download={vlDownloadName}>Download {copy.short} vendor LCR 2 CSV</a>}
           </div>
         )}
-      </article>
+        </article>
+        </div>
+      </section>
 
       {summary && (
         <section className="results" aria-live="polite">

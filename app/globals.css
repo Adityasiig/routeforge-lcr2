@@ -66,6 +66,7 @@ main { min-height: 100vh; padding: 0 5vw 48px; }
 .vendor-panel { grid-area: vendors; }
 .traffic-panel { grid-area: traffic; }
 .customer-panel { grid-area: customer; }
+.workspace-right { grid-area: customer; display: flex; flex-direction: column; gap: 18px; }
 .panel-heading { display: flex; justify-content: space-between; align-items: center; margin-bottom: 24px; gap: 20px; }
 .panel-heading > div { display: flex; align-items: center; gap: 14px; }
 .panel h2, .results h2 { margin: 3px 0 0; font-family: Georgia, serif; font-size: 28px; font-weight: 500; letter-spacing: -.025em; }
