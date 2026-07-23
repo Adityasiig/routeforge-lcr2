@@ -1,6 +1,5 @@
 import { readFile, rename, unlink, writeFile } from "node:fs/promises";
 import { randomUUID } from "node:crypto";
-import ExcelJS from "exceljs";
 import { buildLcr2Deck, parseCsvMatrix, parseTrafficMatrix, DeckError } from "../lib/lcr2.ts";
 
 const manifestPath = process.argv[2];
@@ -43,6 +42,15 @@ async function parseTrafficFile(trafficPath, trafficFilename) {
   const lowerName = String(trafficFilename || "").toLowerCase();
   if (lowerName.endsWith(".csv") || trafficPath.toLowerCase().endsWith(".csv")) {
     return parseTrafficMatrix(parseCsvMatrix(await readFile(trafficPath, "utf8")));
+  }
+  // Load exceljs lazily and defensively: it is only needed for .xlsx files, and
+  // a dynamic import lets us turn a missing-module failure into a clear message
+  // instead of an uncatchable import-time crash ("could not start").
+  let ExcelJS;
+  try {
+    ({ default: ExcelJS } = await import("exceljs"));
+  } catch {
+    throw new DeckError("The server could not load the Excel parser. Re-save the traffic file as CSV, or redeploy so exceljs is bundled with the worker.");
   }
   const workbook = new ExcelJS.Workbook();
   try {

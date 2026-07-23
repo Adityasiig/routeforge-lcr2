@@ -10,6 +10,15 @@ COPY . .
 ENV NEXT_TELEMETRY_DISABLED=1
 RUN npm run build
 
+# Runtime dependencies for the background build worker (workers/build-job.mjs).
+# The worker is a raw ESM file that Next.js does NOT trace, so exceljs (and its
+# transitive deps) would otherwise be absent from the standalone image and the
+# worker would crash on startup. Install exceljs into an isolated tree that we
+# drop next to the worker, so it resolves without touching the server's deps.
+FROM node:22-alpine AS worker-deps
+WORKDIR /worker-deps
+RUN npm init -y >/dev/null 2>&1 && npm install --omit=dev --no-audit --no-fund exceljs@4.4.0
+
 FROM node:22-alpine AS runner
 WORKDIR /app
 ENV NODE_ENV=production
@@ -24,6 +33,8 @@ COPY --from=builder --chown=nextjs:nodejs /app/.next/standalone ./
 COPY --from=builder --chown=nextjs:nodejs /app/.next/static ./.next/static
 COPY --from=builder --chown=nextjs:nodejs /app/workers ./workers
 COPY --from=builder --chown=nextjs:nodejs /app/lib/lcr2.ts ./lib/lcr2.ts
+# exceljs resolves from /app/workers/node_modules for the worker only.
+COPY --from=worker-deps --chown=nextjs:nodejs /worker-deps/node_modules ./workers/node_modules
 USER nextjs
 VOLUME ["/data"]
 EXPOSE 3000

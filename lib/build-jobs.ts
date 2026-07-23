@@ -10,14 +10,9 @@ import { DeckError, type BuildOptions, type BuildSummary } from "./lcr2";
 import { getDataRoot } from "./storage";
 import type { DeckVariant } from "./variants";
 
-// Side-effect import ONLY. The traffic workbook is now parsed inside
-// workers/build-job.mjs, which is copied into the image as a raw file and is
-// invisible to Next.js's dependency tracer. Without this import, `exceljs`
-// (and its transitive deps) would be pruned from `.next/standalone/node_modules`
-// and the worker would crash at runtime with MODULE_NOT_FOUND: exceljs.
-// build-jobs.ts IS traced (it is imported by the /api/build route), so importing
-// exceljs here forces it — and everything it needs — into the runtime bundle.
-import "exceljs";
+// NOTE: exceljs is used only by the background worker (workers/build-job.mjs),
+// which resolves it from its own node_modules bundled by the Dockerfile. The
+// web server does not import exceljs.
 
 export type BuildJobState = "queued" | "running" | "completed" | "failed";
 
