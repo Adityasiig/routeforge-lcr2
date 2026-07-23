@@ -4,6 +4,7 @@ import { createWriteStream } from "node:fs";
 import { mkdir, readFile, readdir, rename, rm, stat, writeFile } from "node:fs/promises";
 import { Readable } from "node:stream";
 import { pipeline } from "node:stream/promises";
+import type { ReadableStream as WebReadableStream } from "node:stream/web";
 import path from "node:path";
 import { DeckError, type BuildOptions, type BuildSummary } from "./lcr2";
 import { getDataRoot } from "./storage";
@@ -73,7 +74,9 @@ async function writeJsonAtomic(filePath: string, value: unknown) {
 // persisted as raw bytes on the request path (fast, I/O-bound) and parsed later
 // by the worker, instead of being decoded/parsed inside the HTTP handler.
 async function streamFileToDisk(file: File, destinationPath: string) {
-  const webStream = file.stream() as unknown as ReadableStream<Uint8Array>;
+  // file.stream() is typed as the DOM ReadableStream (lib.dom), but Node's
+  // Readable.fromWeb expects the node:stream/web ReadableStream. Cast across.
+  const webStream = file.stream() as unknown as WebReadableStream<Uint8Array>;
   await pipeline(Readable.fromWeb(webStream), createWriteStream(destinationPath));
 }
 
