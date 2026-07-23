@@ -497,11 +497,34 @@ function VariantWorkspace({ variant }: { variant: Variant }) {
 export default function Home() {
   const [activeVariant, setActiveVariant] = useState<Variant>("sd");
 
+  const logout = async () => {
+    try { await fetch("/api/logout", { method: "POST" }); } catch { /* ignore */ }
+    window.location.href = "/login";
+  };
+
   return (
     <main>
       <header className="topbar">
         <a className="brand" href="#top" aria-label="RouteForge home"><span className="brand-mark">RF</span><span>RouteForge</span></a>
-        <div className="topbar-meta"><span className="live-dot" aria-hidden="true" />USA NPANXX · LCR 2</div>
+        <div className="topbar-meta">
+          <span className="live-dot" aria-hidden="true" />USA NPANXX · LCR 2
+          <button
+            type="button"
+            onClick={logout}
+            style={{
+              marginLeft: "14px",
+              padding: "6px 12px",
+              borderRadius: "8px",
+              border: "1px solid rgba(0,0,0,0.15)",
+              background: "transparent",
+              color: "inherit",
+              fontSize: "13px",
+              cursor: "pointer",
+            }}
+          >
+            Log out
+          </button>
+        </div>
       </header>
 
       <section className="hero" id="top">
