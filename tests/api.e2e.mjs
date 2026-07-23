@@ -57,19 +57,36 @@ buildForm.append("markup", "40");
 buildForm.append("singleVendor", "fallback");
 const buildResponse = await fetch(`${baseUrl}/api/build`, { method: "POST", body: buildForm });
 if (!buildResponse.ok) throw new Error(`Deck build failed: ${await buildResponse.text()}`);
-assert.equal(buildResponse.status, 200);
+assert.equal(buildResponse.status, 202);
+const createdJob = await buildResponse.json();
+assert.ok(createdJob.jobId);
 
-const output = await buildResponse.text();
+let completedJob;
+for (let attempt = 0; attempt < 200; attempt += 1) {
+  await new Promise((resolve) => setTimeout(resolve, 100));
+  const statusResponse = await fetch(`${baseUrl}/api/build/${createdJob.jobId}`);
+  if (!statusResponse.ok) throw new Error(`Job status failed: ${await statusResponse.text()}`);
+  const status = await statusResponse.json();
+  if (status.state === "failed") throw new Error(status.error || "Background build failed.");
+  if (status.state === "completed") {
+    completedJob = status;
+    break;
+  }
+}
+assert.ok(completedJob, "Background build did not complete before the E2E timeout.");
+
+const downloadResponse = await fetch(`${baseUrl}/api/build/${createdJob.jobId}?download=1`);
+if (!downloadResponse.ok) throw new Error(`Deck download failed: ${await downloadResponse.text()}`);
+const output = await downloadResponse.text();
 assert.match(output, /1123456,0\.0200,0\.0300,0\.0400/, "A positive-attempt code must remain unchanged.");
 assert.match(output, /1123458,0\.0154,0\.0294,0\.0434/, "An eligible new code must receive LCR 2 plus markup.");
 assert.doesNotMatch(output, /1123459,/, "A positive-attempt code absent from the customer deck must not be newly priced.");
 
-const encodedSummary = buildResponse.headers.get("X-LCR-Summary");
-assert.ok(encodedSummary);
-const summary = JSON.parse(Buffer.from(encodedSummary, "base64").toString("utf8"));
+const summary = completedJob.summary;
+assert.ok(summary);
 assert.equal(summary.trafficProtectedCodes, 1);
 assert.equal(summary.positiveTrafficNewCodesSkipped, 1);
 assert.equal(summary.validation.trafficProtectedCodesChanged, 0);
 assert.equal(summary.validation.status, "PASS");
 
-console.log("API E2E PASS: incremental vendor add, SD/Convo isolation, XLSX parsing, traffic locks, markup, and validation verified.");
+console.log("API E2E PASS: background job polling/download, incremental vendor add, SD/Convo isolation, XLSX parsing, traffic locks, markup, and validation verified.");

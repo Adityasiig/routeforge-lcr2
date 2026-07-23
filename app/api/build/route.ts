@@ -1,7 +1,8 @@
 import { NextResponse } from "next/server";
 import { randomUUID } from "node:crypto";
-import { buildLcr2Deck, DeckError } from "@/lib/lcr2";
-import { readVendorDecks } from "@/lib/storage";
+import { DeckError } from "@/lib/lcr2";
+import { createBuildJob } from "@/lib/build-jobs";
+import { getVendorDeckPaths } from "@/lib/storage";
 import { parseTrafficUpload } from "@/lib/traffic";
 import { isDeckVariant, variantLabel } from "@/lib/variants";
 
@@ -31,19 +32,21 @@ export async function POST(request: Request) {
     const singleVendor = form.get("singleVendor") === "require2" ? "require2" : "fallback";
     const decimalValue = form.get("decimals");
     const decimals = decimalValue === null || decimalValue === "" ? undefined : Number(decimalValue);
-    const [vendorTexts, trafficRows] = await Promise.all([readVendorDecks(variant), parseTrafficUpload(traffic)]);
-    const result = buildLcr2Deck(await customer.text(), vendorTexts, { markup, singleVendor, decimals }, trafficRows);
     const filename = safeFilename(customer.name, variant);
-    return new Response(result.csv, {
-      status: 200,
-      headers: {
-        "Content-Type": "text/csv; charset=utf-8",
-        "Content-Disposition": `attachment; filename="${filename}"`,
-        "Cache-Control": "no-store",
-        "X-LCR-Filename": filename,
-        "X-LCR-Summary": Buffer.from(JSON.stringify(result.summary), "utf8").toString("base64"),
-      },
+    const [vendorPaths, trafficRows, customerText] = await Promise.all([
+      getVendorDeckPaths(variant),
+      parseTrafficUpload(traffic),
+      customer.text(),
+    ]);
+    const job = await createBuildJob({
+      variant,
+      filename,
+      customerText,
+      trafficRows,
+      vendorPaths,
+      options: { markup, singleVendor, decimals },
     });
+    return NextResponse.json({ jobId: job.jobId, state: job.state }, { status: 202, headers: { "Cache-Control": "no-store" } });
   } catch (error) {
     const message = error instanceof DeckError ? error.message : "The LCR 2 deck could not be built.";
     if (!(error instanceof DeckError)) console.error(`[LCR2 build ${requestId}]`, error);

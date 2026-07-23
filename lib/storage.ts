@@ -155,3 +155,13 @@ export async function readVendorDecks(variant: DeckVariant) {
   const { vendorDirectory } = await ensureStorage(variant);
   return Promise.all(metadata.map((vendor) => readFile(path.join(vendorDirectory, vendor.storedName), "utf8")));
 }
+
+export function getDataRoot() {
+  return dataRoot;
+}
+
+export async function getVendorDeckPaths(variant: DeckVariant) {
+  const metadata = await readMetadata(variant);
+  const { vendorDirectory } = await ensureStorage(variant);
+  return metadata.map((vendor) => path.join(vendorDirectory, vendor.storedName));
+}

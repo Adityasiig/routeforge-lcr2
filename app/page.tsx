@@ -42,6 +42,15 @@ type Summary = {
   };
 };
 
+type BuildJobPayload = {
+  jobId: string;
+  state: "queued" | "running" | "completed" | "failed";
+  filename?: string;
+  summary?: Summary;
+  durationMs?: number;
+  error?: string;
+};
+
 const VARIANT_COPY = {
   sd: {
     short: "SD",
@@ -59,6 +68,10 @@ function formatBytes(bytes: number) {
   if (bytes < 1024) return `${bytes} B`;
   if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(1)} KB`;
   return `${(bytes / 1024 / 1024).toFixed(1)} MB`;
+}
+
+function wait(milliseconds: number) {
+  return new Promise((resolve) => window.setTimeout(resolve, milliseconds));
 }
 
 async function buildErrorMessage(response: Response) {
@@ -163,6 +176,7 @@ function VariantWorkspace({ variant }: { variant: Variant }) {
   const [loadingVendors, setLoadingVendors] = useState(true);
   const [savingOperation, setSavingOperation] = useState<"add" | "replace" | null>(null);
   const [building, setBuilding] = useState(false);
+  const [buildStatusText, setBuildStatusText] = useState("");
   const [notice, setNotice] = useState<{ type: "error" | "success"; text: string } | null>(null);
   const [summary, setSummary] = useState<Summary | null>(null);
   const [downloadUrl, setDownloadUrl] = useState<string | null>(null);
@@ -235,6 +249,7 @@ function VariantWorkspace({ variant }: { variant: Variant }) {
     if (!customerFiles.length) return setNotice({ type: "error", text: "Choose the customer CSV rate deck." });
     if (markup.trim() === "") return setNotice({ type: "error", text: "Enter the markup percentage for new codes." });
     setBuilding(true);
+    setBuildStatusText("Uploading build inputs…");
     setNotice(null);
     setSummary(null);
     if (downloadUrl) URL.revokeObjectURL(downloadUrl);
@@ -251,15 +266,32 @@ function VariantWorkspace({ variant }: { variant: Variant }) {
       if (!response.ok) {
         throw new Error(await buildErrorMessage(response));
       }
-      const summaryHeader = response.headers.get("X-LCR-Summary");
-      const filenameHeader = response.headers.get("X-LCR-Filename");
-      if (!summaryHeader) throw new Error("The build completed without a validation summary.");
-      const resultSummary = JSON.parse(atob(summaryHeader)) as Summary;
-      const blob = await response.blob();
-      setSummary(resultSummary);
+      const created = await response.json() as BuildJobPayload;
+      if (!created.jobId) throw new Error("The server did not return a build job identifier.");
+      setBuildStatusText("Building and validating in background…");
+      setNotice({ type: "success", text: `Build ${created.jobId.slice(0, 8)} started. You can keep this page open while the server processes the large decks.` });
+
+      let completed: BuildJobPayload | null = null;
+      while (!completed) {
+        await wait(2000);
+        const statusResponse = await fetch(`/api/build/${encodeURIComponent(created.jobId)}`, { cache: "no-store" });
+        if (!statusResponse.ok) throw new Error(await buildErrorMessage(statusResponse));
+        const status = await statusResponse.json() as BuildJobPayload;
+        if (status.state === "failed") throw new Error(status.error || `Background build ${created.jobId.slice(0, 8)} failed.`);
+        if (status.state === "completed") completed = status;
+        else setBuildStatusText(status.state === "queued" ? "Build queued…" : "Building and validating in background…");
+      }
+
+      if (!completed.summary) throw new Error("The background build completed without a validation summary.");
+      setBuildStatusText("Preparing download…");
+      const downloadResponse = await fetch(`/api/build/${encodeURIComponent(created.jobId)}?download=1`, { cache: "no-store" });
+      if (!downloadResponse.ok) throw new Error(await buildErrorMessage(downloadResponse));
+      const blob = await downloadResponse.blob();
+      setSummary(completed.summary);
       setDownloadUrl(URL.createObjectURL(blob));
-      setDownloadName(filenameHeader || `Customer_USA_${copy.short.toUpperCase()}_LCR2_Rate_Deck.csv`);
-      setNotice({ type: "success", text: `${copy.short} LCR 2 deck built, traffic-protected, and validated.` });
+      setDownloadName(completed.filename || `Customer_USA_${copy.short.toUpperCase()}_LCR2_Rate_Deck.csv`);
+      const elapsed = completed.durationMs ? ` in ${(completed.durationMs / 1000).toFixed(1)} seconds` : "";
+      setNotice({ type: "success", text: `${copy.short} LCR 2 deck built, traffic-protected, and validated${elapsed}.` });
     } catch (error) {
       const message = error instanceof Error ? error.message : "Build failed.";
       setNotice({
@@ -270,6 +302,7 @@ function VariantWorkspace({ variant }: { variant: Variant }) {
       });
     } finally {
       setBuilding(false);
+      setBuildStatusText("");
     }
   };
 
@@ -421,7 +454,7 @@ function VariantWorkspace({ variant }: { variant: Variant }) {
           </div>
 
           <button className="build-button" type="button" disabled={building || !vendors.length} onClick={buildDeck}>
-            <span>{building ? "Building and validating…" : `Build ${copy.short} LCR 2 customer deck`}</span>
+            <span>{building ? buildStatusText || "Starting background build…" : `Build ${copy.short} LCR 2 customer deck`}</span>
             <span aria-hidden="true">→</span>
           </button>
         </article>

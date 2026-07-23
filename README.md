@@ -70,6 +70,8 @@ Because rate and traffic files are commercially sensitive, protect the applicati
 
 The LCR accumulator retains only the lowest and second-lowest quote per code and rate field instead of retaining every vendor quote. This keeps million-row builds within a predictable memory envelope without changing LCR 2 selection, including equal-priced quotes from different vendors.
 
+Large builds run as persistent background jobs in a separate Node process. The browser receives a job ID immediately, polls a lightweight status endpoint, and downloads the validated CSV when ready. This prevents Cloudflare or another reverse proxy from terminating one long-running HTTP response, and keeps the application health endpoint responsive during calculation. Completed job artifacts expire after 24 hours.
+
 Run the synthetic six-vendor benchmark with:
 
 ```bash
