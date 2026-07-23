@@ -1,6 +1,6 @@
 import { readFile, rename, unlink, writeFile } from "node:fs/promises";
 import { randomUUID } from "node:crypto";
-import { buildLcr2Deck, parseCsvMatrix, parseTrafficMatrix, DeckError } from "../lib/lcr2.ts";
+import { buildLcr2Deck, buildVendorLcr2Deck, parseCsvMatrix, parseTrafficMatrix, DeckError } from "../lib/lcr2.ts";
 
 const manifestPath = process.argv[2];
 if (!manifestPath) throw new Error("A build manifest path is required.");
@@ -71,14 +71,21 @@ async function parseTrafficFile(trafficPath, trafficFilename) {
 const started = Date.now();
 try {
   await status("running");
-  const [customerText, vendorTexts] = await Promise.all([
-    readFile(manifest.customerPath, "utf8"),
-    Promise.all(manifest.vendorPaths.map((vendorPath) => readFile(vendorPath, "utf8"))),
-  ]);
-  const trafficRows = await parseTrafficFile(manifest.trafficPath, manifest.trafficFilename);
-  const result = buildLcr2Deck(customerText, vendorTexts, manifest.options, trafficRows);
-  await writeFile(manifest.outputPath, result.csv, "utf8");
-  await status("completed", { summary: result.summary, durationMs: Date.now() - started });
+  if (manifest.kind === "vendor-lcr2") {
+    const vendorTexts = await Promise.all(manifest.vendorPaths.map((vendorPath) => readFile(vendorPath, "utf8")));
+    const result = buildVendorLcr2Deck(vendorTexts, manifest.options);
+    await writeFile(manifest.outputPath, result.csv, "utf8");
+    await status("completed", { summary: result.summary, durationMs: Date.now() - started });
+  } else {
+    const [customerText, vendorTexts] = await Promise.all([
+      readFile(manifest.customerPath, "utf8"),
+      Promise.all(manifest.vendorPaths.map((vendorPath) => readFile(vendorPath, "utf8"))),
+    ]);
+    const trafficRows = await parseTrafficFile(manifest.trafficPath, manifest.trafficFilename);
+    const result = buildLcr2Deck(customerText, vendorTexts, manifest.options, trafficRows);
+    await writeFile(manifest.outputPath, result.csv, "utf8");
+    await status("completed", { summary: result.summary, durationMs: Date.now() - started });
+  }
 } catch (error) {
   const reference = manifest.jobId.slice(0, 8);
   await writeFile(`${manifest.jobDirectory}/error.log`, error instanceof Error ? (error.stack || error.message) : String(error), "utf8").catch(() => undefined);
@@ -92,8 +99,8 @@ try {
   process.exitCode = 1;
 } finally {
   await Promise.allSettled([
-    unlink(manifest.customerPath),
-    unlink(manifest.trafficPath),
+    manifest.customerPath ? unlink(manifest.customerPath) : Promise.resolve(),
+    manifest.trafficPath ? unlink(manifest.trafficPath) : Promise.resolve(),
     unlink(manifestPath),
   ]);
 }

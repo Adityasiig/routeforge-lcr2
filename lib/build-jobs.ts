@@ -6,7 +6,7 @@ import { Readable } from "node:stream";
 import { pipeline } from "node:stream/promises";
 import type { ReadableStream as WebReadableStream } from "node:stream/web";
 import path from "node:path";
-import { DeckError, type BuildOptions, type BuildSummary } from "./lcr2";
+import { DeckError, type BuildOptions, type BuildSummary, type VendorLcr2Options } from "./lcr2";
 import { getDataRoot } from "./storage";
 import type { DeckVariant } from "./variants";
 
@@ -28,18 +28,21 @@ export type BuildJobStatus = {
   error?: string;
 };
 
+type BuildJobKind = "lcr2" | "vendor-lcr2";
+
 type BuildJobManifest = {
   jobId: string;
   jobDirectory: string;
-  customerPath: string;
-  trafficPath: string;
-  trafficFilename: string;
+  kind: BuildJobKind;
+  customerPath?: string;
+  trafficPath?: string;
+  trafficFilename?: string;
   vendorPaths: string[];
   outputPath: string;
   statusPath: string;
   filename: string;
   variant: DeckVariant;
-  options: BuildOptions;
+  options: BuildOptions | VendorLcr2Options;
   createdAt: string;
 };
 
@@ -146,12 +149,17 @@ function launchWorker(manifestPath: string, statusPath: string) {
 export async function createBuildJob(input: {
   variant: DeckVariant;
   filename: string;
-  customer: File;
-  traffic: File;
+  kind?: BuildJobKind;
+  customer?: File;
+  traffic?: File;
   vendorPaths: string[];
-  options: BuildOptions;
+  options: BuildOptions | VendorLcr2Options;
 }) {
+  const kind: BuildJobKind = input.kind ?? "lcr2";
   if (!input.vendorPaths.length) throw new DeckError("No saved vendor decks are available.");
+  if (kind === "lcr2" && (!input.customer || !input.traffic)) {
+    throw new DeckError("A customer deck and a traffic file are required for this build.");
+  }
   await cleanupExpiredJobs();
   const active = await findActiveJob();
   if (active) throw new DeckError(`Build ${active.jobId.slice(0, 8)} is already running. Wait for it to finish before starting another build.`);
@@ -159,9 +167,6 @@ export async function createBuildJob(input: {
   const jobId = randomUUID();
   const { directory, statusPath, outputPath } = jobPaths(jobId);
   await mkdir(directory, { recursive: true });
-  const customerPath = path.join(directory, "customer.csv");
-  const trafficExtension = input.traffic.name.toLowerCase().endsWith(".xlsx") ? "xlsx" : "csv";
-  const trafficPath = path.join(directory, `traffic.${trafficExtension}`);
   const manifestPath = path.join(directory, "manifest.json");
   const createdAt = new Date().toISOString();
   const status: BuildJobStatus = {
@@ -175,9 +180,7 @@ export async function createBuildJob(input: {
   const manifest: BuildJobManifest = {
     jobId,
     jobDirectory: directory,
-    customerPath,
-    trafficPath,
-    trafficFilename: input.traffic.name,
+    kind,
     vendorPaths: input.vendorPaths,
     outputPath,
     statusPath,
@@ -186,14 +189,22 @@ export async function createBuildJob(input: {
     options: input.options,
     createdAt,
   };
-  // Publish the "queued" status first so the client can start polling, then
-  // stream the raw uploads to disk (no parsing), then write the manifest and
-  // launch the worker. Streaming raw bytes is fast; the heavy work is deferred.
+
+  // Publish the "queued" status first so the client can start polling.
   await writeJsonAtomic(statusPath, status);
-  await Promise.all([
-    streamFileToDisk(input.customer, customerPath),
-    streamFileToDisk(input.traffic, trafficPath),
-  ]);
+  if (kind === "lcr2" && input.customer && input.traffic) {
+    // Stream the raw uploads to disk (no parsing) — fast, heavy work is deferred.
+    const customerPath = path.join(directory, "customer.csv");
+    const trafficExtension = input.traffic.name.toLowerCase().endsWith(".xlsx") ? "xlsx" : "csv";
+    const trafficPath = path.join(directory, `traffic.${trafficExtension}`);
+    manifest.customerPath = customerPath;
+    manifest.trafficPath = trafficPath;
+    manifest.trafficFilename = input.traffic.name;
+    await Promise.all([
+      streamFileToDisk(input.customer, customerPath),
+      streamFileToDisk(input.traffic, trafficPath),
+    ]);
+  }
   await writeJsonAtomic(manifestPath, manifest);
   launchWorker(manifestPath, statusPath);
   return status;

@@ -584,3 +584,111 @@ export function buildLcr2Deck(customerText: string, vendorTexts: string[], optio
   if (!passed) throw new DeckError("Validation failed; no deck was released.");
   return { csv, summary };
 }
+
+export type VendorLcr2Options = {
+  markup?: string;
+  singleVendor: "fallback" | "require2";
+  decimals?: number;
+  codeLength?: number;
+};
+
+export type VendorLcr2Summary = {
+  markupPercent: string;
+  singleVendorMode: string;
+  codeLength: number;
+  vendorCount: number;
+  codesPriced: number;
+  singleVendorCodes: number;
+  skippedIncompleteCoverage: number;
+  invalidVendorRowsIgnored: number;
+  duplicateVendorRowsConsolidated: number;
+};
+
+// Build an LCR 2 deck from the vendor decks alone (no customer deck or traffic).
+// For each NPANXX it takes the second-lowest vendor rate per column (fallback to
+// the only rate for single-vendor codes). Markup is optional: omit it for the raw
+// LCR 2 cost deck, or supply it for an LCR 2 + markup sell deck.
+export function buildVendorLcr2Deck(vendorTexts: string[], options: VendorLcr2Options) {
+  if (!vendorTexts.length) throw new DeckError("No saved vendor decks are available.");
+  if (options.decimals !== undefined && (!Number.isInteger(options.decimals) || options.decimals < 0 || options.decimals > 12)) {
+    throw new DeckError("Decimal places must be a whole number from 0 to 12.");
+  }
+  const markupProvided = options.markup !== undefined && options.markup.trim() !== "";
+  const factor = markupProvided ? markupFactor(options.markup!.trim()) : null;
+
+  const vendorQuotes = new Map<string, Record<RateColumn, BestTwo>>();
+  const lengthCounts = new Map<number, number>();
+  let invalidVendorRows = 0;
+  let duplicateVendorRows = 0;
+
+  for (const vendorText of vendorTexts) {
+    const vendorDeck = parseDeck(vendorText);
+    const aggregate = new Map<string, Partial<Record<RateColumn, Rate>>>();
+    for (const row of vendorDeck.rows) {
+      if (!/^\d+$/.test(row.code)) {
+        invalidVendorRows += 1;
+        continue;
+      }
+      if (aggregate.has(row.code)) duplicateVendorRows += 1;
+      const fields = aggregate.get(row.code) ?? {};
+      for (const column of RATE_COLUMNS) {
+        const candidate = vendorRate(row[column]);
+        const current = fields[column];
+        if (candidate && (!current || compare(candidate.value, current.value) < 0)) fields[column] = candidate;
+      }
+      aggregate.set(row.code, fields);
+    }
+    for (const [code, fields] of aggregate) {
+      if (!vendorQuotes.has(code)) lengthCounts.set(code.length, (lengthCounts.get(code.length) ?? 0) + 1);
+      const destination = vendorQuotes.get(code) ?? {
+        interrate: { lowest: null, second: null },
+        intrarate: { lowest: null, second: null },
+        ijrate: { lowest: null, second: null },
+      };
+      for (const column of RATE_COLUMNS) if (fields[column]) addQuote(destination[column], fields[column]!);
+      vendorQuotes.set(code, destination);
+    }
+  }
+
+  if (!lengthCounts.size) throw new DeckError("The vendor decks contain no valid numeric codes.");
+  const codeLength = options.codeLength ?? Array.from(lengthCounts).sort((a, b) => b[1] - a[1] || b[0] - a[0])[0][0];
+
+  const output: DeckRow[] = [];
+  let singleVendorCodes = 0;
+  let skipped = 0;
+  const codes = Array.from(vendorQuotes.keys()).filter((code) => code.length === codeLength).sort();
+  for (const code of codes) {
+    const pairs = vendorQuotes.get(code)!;
+    const fields = {
+      interrate: chooseLcr(pairs.interrate, options.singleVendor),
+      intrarate: chooseLcr(pairs.intrarate, options.singleVendor),
+      ijrate: chooseLcr(pairs.ijrate, options.singleVendor),
+    };
+    if (RATE_COLUMNS.some((column) => !fields[column].rate)) {
+      skipped += 1;
+      continue;
+    }
+    const result = { code, interrate: "", intrarate: "", ijrate: "" } satisfies DeckRow;
+    for (const column of RATE_COLUMNS) {
+      const rate = fields[column].rate!;
+      if (markupProvided) result[column] = formatComputed(multiply(rate.value, factor!), options.decimals);
+      else result[column] = options.decimals === undefined ? rate.raw : formatComputed(rate.value, options.decimals);
+    }
+    output.push(result);
+    if (RATE_COLUMNS.some((column) => fields[column].single)) singleVendorCodes += 1;
+  }
+
+  const csv = serializeDeck(output);
+  const summary: VendorLcr2Summary = {
+    markupPercent: markupProvided ? options.markup!.trim() : "",
+    singleVendorMode: options.singleVendor,
+    codeLength,
+    vendorCount: vendorTexts.length,
+    codesPriced: output.length,
+    singleVendorCodes,
+    skippedIncompleteCoverage: skipped,
+    invalidVendorRowsIgnored: invalidVendorRows,
+    duplicateVendorRowsConsolidated: duplicateVendorRows,
+  };
+  return { csv, summary };
+}

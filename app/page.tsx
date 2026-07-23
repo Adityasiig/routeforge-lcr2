@@ -53,6 +53,27 @@ type BuildJobPayload = {
   error?: string;
 };
 
+type VendorLcr2Summary = {
+  markupPercent: string;
+  singleVendorMode: string;
+  codeLength: number;
+  vendorCount: number;
+  codesPriced: number;
+  singleVendorCodes: number;
+  skippedIncompleteCoverage: number;
+  invalidVendorRowsIgnored: number;
+  duplicateVendorRowsConsolidated: number;
+};
+
+type VendorJobPayload = {
+  jobId: string;
+  state: "queued" | "running" | "completed" | "failed";
+  filename?: string;
+  summary?: VendorLcr2Summary;
+  durationMs?: number;
+  error?: string;
+};
+
 const VARIANT_COPY = {
   sd: {
     short: "SD",
@@ -184,6 +205,17 @@ function VariantWorkspace({ variant }: { variant: Variant }) {
   const [downloadUrl, setDownloadUrl] = useState<string | null>(null);
   const [downloadName, setDownloadName] = useState(`Customer_USA_${copy.short.toUpperCase()}_LCR2_Rate_Deck.csv`);
 
+  // "LCR 2 from vendors" panel state (independent of the customer build above).
+  const [vlMarkup, setVlMarkup] = useState("");
+  const [vlMode, setVlMode] = useState<"fallback" | "require2">("fallback");
+  const [vlFixed, setVlFixed] = useState(false);
+  const [vlDecimals, setVlDecimals] = useState("4");
+  const [vlBuilding, setVlBuilding] = useState(false);
+  const [vlStatus, setVlStatus] = useState("");
+  const [vlSummary, setVlSummary] = useState<VendorLcr2Summary | null>(null);
+  const [vlDownloadUrl, setVlDownloadUrl] = useState<string | null>(null);
+  const [vlDownloadName, setVlDownloadName] = useState(`Vendor_USA_${copy.short.toUpperCase()}_LCR2_Rate_Deck.csv`);
+
   useEffect(() => {
     let active = true;
     fetch(`/api/vendors?variant=${variant}`, { cache: "no-store" })
@@ -305,6 +337,61 @@ function VariantWorkspace({ variant }: { variant: Variant }) {
     } finally {
       setBuilding(false);
       setBuildStatusText("");
+    }
+  };
+
+  const generateVendorLcr2 = async () => {
+    if (!vendors.length) return setNotice({ type: "error", text: `Save the ${copy.short} vendor decks first.` });
+    if (vlMarkup.trim() !== "" && !(Number(vlMarkup) >= 0)) return setNotice({ type: "error", text: "Markup must be a non-negative number, or blank for the raw cost deck." });
+    setVlBuilding(true);
+    setVlStatus("Starting…");
+    setNotice(null);
+    setVlSummary(null);
+    if (vlDownloadUrl) URL.revokeObjectURL(vlDownloadUrl);
+    setVlDownloadUrl(null);
+    try {
+      const response = await fetch("/api/vendor-lcr2", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ variant, markup: vlMarkup.trim(), singleVendor: vlMode, decimals: vlFixed ? vlDecimals : undefined }),
+      });
+      if (!response.ok) throw new Error(await buildErrorMessage(response));
+      const created = await response.json() as VendorJobPayload;
+      if (!created.jobId) throw new Error("The server did not return a job identifier.");
+      setVlStatus("Building from vendors in background…");
+
+      let completed: VendorJobPayload | null = null;
+      while (!completed) {
+        await wait(2000);
+        const statusResponse = await fetch(`/api/build/${encodeURIComponent(created.jobId)}`, { cache: "no-store" });
+        if (!statusResponse.ok) throw new Error(await buildErrorMessage(statusResponse));
+        const status = await statusResponse.json() as VendorJobPayload;
+        if (status.state === "failed") throw new Error(status.error || "The vendor LCR 2 build failed.");
+        if (status.state === "completed") completed = status;
+        else setVlStatus(status.state === "queued" ? "Queued…" : "Building from vendors…");
+      }
+
+      if (!completed.summary) throw new Error("The build completed without a summary.");
+      setVlStatus("Preparing download…");
+      const downloadResponse = await fetch(`/api/build/${encodeURIComponent(created.jobId)}?download=1`, { cache: "no-store" });
+      if (!downloadResponse.ok) throw new Error(await buildErrorMessage(downloadResponse));
+      const blob = await downloadResponse.blob();
+      setVlSummary(completed.summary);
+      setVlDownloadUrl(URL.createObjectURL(blob));
+      setVlDownloadName(completed.filename || `Vendor_USA_${copy.short.toUpperCase()}_LCR2_Rate_Deck.csv`);
+      const elapsed = completed.durationMs ? ` in ${(completed.durationMs / 1000).toFixed(1)} seconds` : "";
+      setNotice({ type: "success", text: `${copy.short} vendor LCR 2 deck built${elapsed}.` });
+    } catch (error) {
+      const message = error instanceof Error ? error.message : "Build failed.";
+      setNotice({
+        type: "error",
+        text: /failed to fetch|networkerror|load failed/i.test(message)
+          ? "The connection to the build server was interrupted. Retry once; if it repeats, check whether the application restarted or ran out of memory."
+          : message,
+      });
+    } finally {
+      setVlBuilding(false);
+      setVlStatus("");
     }
   };
 
@@ -461,6 +548,69 @@ function VariantWorkspace({ variant }: { variant: Variant }) {
           </button>
         </article>
       </section>
+
+      <article className="panel vendor-lcr2-panel">
+        <div className="panel-heading">
+          <div>
+            <span className="step-number">04</span>
+            <div><span className="eyebrow">Generate from saved vendors</span><h2>LCR 2 from vendors</h2></div>
+          </div>
+          <span className={`status-pill ${vendors.length ? "ready" : "waiting"}`}>
+            {vendors.length ? `${vendors.length} vendor${vendors.length === 1 ? "" : "s"}` : "No vendors"}
+          </span>
+        </div>
+
+        <div className="rule-note">
+          <strong>Second-lowest wins</strong>
+          <p>Builds an LCR 2 deck straight from your saved {copy.short} vendors — the second-cheapest rate per code, no customer deck or traffic needed. Markup is optional: leave it blank for the raw LCR 2 cost deck, or enter one for an LCR 2 + markup sell deck.</p>
+        </div>
+
+        <div className="controls-grid">
+          <label className="field">
+            <span>Markup <b>Optional</b></span>
+            <div className="input-with-suffix">
+              <input type="number" min="0" step="0.01" placeholder="blank = raw cost" value={vlMarkup} onChange={(event) => setVlMarkup(event.target.value)} />
+              <span>%</span>
+            </div>
+          </label>
+          <fieldset className="field">
+            <legend>Single-vendor handling</legend>
+            <div className="segmented">
+              <button type="button" className={vlMode === "fallback" ? "active" : ""} onClick={() => setVlMode("fallback")}>Fallback</button>
+              <button type="button" className={vlMode === "require2" ? "active" : ""} onClick={() => setVlMode("require2")}>Require 2</button>
+            </div>
+          </fieldset>
+        </div>
+
+        <div className="precision-row">
+          <label className="switch-label">
+            <input type="checkbox" checked={vlFixed} onChange={(event) => setVlFixed(event.target.checked)} />
+            <span className="switch" aria-hidden="true" />
+            Fixed decimal precision
+          </label>
+          <label className={`decimal-input ${vlFixed ? "enabled" : ""}`}>
+            <input type="number" min="0" max="12" value={vlDecimals} disabled={!vlFixed} onChange={(event) => setVlDecimals(event.target.value)} />
+            places
+          </label>
+        </div>
+
+        <button className="build-button" type="button" disabled={vlBuilding || !vendors.length} onClick={generateVendorLcr2}>
+          <span>{vlBuilding ? vlStatus || "Generating…" : `Generate ${copy.short} LCR 2 from vendors`}</span>
+          <span aria-hidden="true">→</span>
+        </button>
+
+        {vlSummary && (
+          <div aria-live="polite" style={{ marginTop: "20px" }}>
+            <div className="metrics">
+              <div><span>Codes priced</span><strong>{vlSummary.codesPriced.toLocaleString()}</strong></div>
+              <div><span>Markup</span><strong>{vlSummary.markupPercent ? `${vlSummary.markupPercent}%` : "None (raw cost)"}</strong></div>
+              <div><span>Single-vendor</span><strong>{vlSummary.singleVendorCodes.toLocaleString()}</strong></div>
+              <div><span>Skipped</span><strong>{vlSummary.skippedIncompleteCoverage.toLocaleString()}</strong></div>
+            </div>
+            {vlDownloadUrl && <a className="download-button" href={vlDownloadUrl} download={vlDownloadName}>Download {copy.short} vendor LCR 2 CSV</a>}
+          </div>
+        )}
+      </article>
 
       {summary && (
         <section className="results" aria-live="polite">
