@@ -28,6 +28,7 @@ export type BuildSummary = {
   codeLength: number;
   validExistingCodesPreserved: number;
   existingRateFieldsLowered: number;
+  existingRateFieldsRaised: number;
   newCodesAdded: number;
   newCodesSkippedIncompleteCoverage: number;
   singleVendorNewCodesAdded: number;
@@ -47,6 +48,7 @@ export type BuildSummary = {
     duplicateCodes: number;
     missingCustomerCodes: number;
     existingRatesIncreased: number;
+    existingRatesLowered: number;
     trafficProtectedCodesChanged: number;
     status: "PASS" | "FAIL";
   };
@@ -356,9 +358,11 @@ export function buildLcr2Deck(customerText: string, vendorTexts: string[], optio
 
   const output: DeckRow[] = [];
   let loweredFields = 0;
+  let raisedFields = 0;
   for (const [code, originalRow] of customer) {
     const result = { ...originalRow };
     if ((traffic.get(code)?.attempts ?? 0) > 0) {
+      // Codes carrying current attempts are frozen: rates stay exactly as-is.
       output.push(result);
       continue;
     }
@@ -366,9 +370,17 @@ export function buildLcr2Deck(customerText: string, vendorTexts: string[], optio
       const pair = vendorQuotes.get(code)?.[column];
       const selected = pair ? chooseLcr(pair, options.singleVendor).rate : null;
       const original = parseDecimal(originalRow[column]);
-      if (selected && original && compare(selected.value, original) < 0) {
-        loweredFields += 1;
-        result[column] = options.decimals === undefined ? selected.raw : formatExisting(selected.value, original, options.decimals);
+      // Raise the existing rate up to the LCR 2 sell price = LCR 2 x (1 + markup),
+      // but only when that target is higher than what the customer pays now. An
+      // existing rate is never decreased.
+      if (selected && original) {
+        const target = multiply(selected.value, factor);
+        if (compare(target, original) > 0) {
+          raisedFields += 1;
+          result[column] = formatComputed(target, options.decimals);
+        } else if (options.decimals !== undefined) {
+          result[column] = formatExisting(original, original, options.decimals);
+        }
       } else if (options.decimals !== undefined && original) {
         result[column] = formatExisting(original, original, options.decimals);
       }
@@ -411,6 +423,7 @@ export function buildLcr2Deck(customerText: string, vendorTexts: string[], optio
   const outputByCode = new Map(validationDeck.rows.map((row) => [row.code, row]));
   const missingCustomerCodes = Array.from(customer.keys()).filter((code) => !outputByCode.has(code)).length;
   let existingRatesIncreased = 0;
+  let existingRatesLowered = 0;
   let trafficProtectedCodesChanged = 0;
   for (const [code, originalRow] of customer) {
     const result = outputByCode.get(code);
@@ -422,10 +435,13 @@ export function buildLcr2Deck(customerText: string, vendorTexts: string[], optio
       const original = parseDecimal(originalRow[column]);
       const built = parseDecimal(result[column]);
       if (original && built && compare(built, original) > 0) existingRatesIncreased += 1;
+      if (original && built && compare(built, original) < 0) existingRatesLowered += 1;
     }
   }
   const exactColumns = validationDeck.headers.length === COLUMNS.length && COLUMNS.every((column, index) => validationDeck.headers[index] === column);
-  const passed = exactColumns && duplicateCodes === 0 && missingCustomerCodes === 0 && existingRatesIncreased === 0 && trafficProtectedCodesChanged === 0;
+  // Safety guarantee for the raise workflow: an existing customer rate must never
+  // be decreased, and traffic-protected codes must never move.
+  const passed = exactColumns && duplicateCodes === 0 && missingCustomerCodes === 0 && existingRatesLowered === 0 && trafficProtectedCodesChanged === 0;
 
   const summary: BuildSummary = {
     markupPercent: options.markup,
@@ -433,6 +449,7 @@ export function buildLcr2Deck(customerText: string, vendorTexts: string[], optio
     codeLength,
     validExistingCodesPreserved: customer.size,
     existingRateFieldsLowered: loweredFields,
+    existingRateFieldsRaised: raisedFields,
     newCodesAdded,
     newCodesSkippedIncompleteCoverage: newCodesSkipped,
     singleVendorNewCodesAdded: singleVendorNewCodes,
@@ -452,6 +469,7 @@ export function buildLcr2Deck(customerText: string, vendorTexts: string[], optio
       duplicateCodes,
       missingCustomerCodes,
       existingRatesIncreased,
+      existingRatesLowered,
       trafficProtectedCodesChanged,
       status: passed ? "PASS" : "FAIL",
     },

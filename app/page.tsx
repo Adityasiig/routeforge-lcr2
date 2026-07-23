@@ -18,6 +18,7 @@ type Summary = {
   codeLength: number;
   validExistingCodesPreserved: number;
   existingRateFieldsLowered: number;
+  existingRateFieldsRaised: number;
   newCodesAdded: number;
   newCodesSkippedIncompleteCoverage: number;
   singleVendorNewCodesAdded: number;
@@ -37,6 +38,7 @@ type Summary = {
     duplicateCodes: number;
     missingCustomerCodes: number;
     existingRatesIncreased: number;
+    existingRatesLowered: number;
     trafficProtectedCodesChanged: number;
     status: "PASS" | "FAIL";
   };
@@ -472,9 +474,9 @@ function VariantWorkspace({ variant }: { variant: Variant }) {
           </div>
           <div className="metrics">
             <div><span>Traffic-locked codes</span><strong>{summary.trafficProtectedCodes.toLocaleString()}</strong></div>
-            <div><span>Rate fields lowered</span><strong>{summary.existingRateFieldsLowered.toLocaleString()}</strong></div>
+            <div><span>Rate fields raised</span><strong>{summary.existingRateFieldsRaised.toLocaleString()}</strong></div>
             <div><span>New codes</span><strong>{summary.newCodesAdded.toLocaleString()}</strong></div>
-            <div><span>Rates increased</span><strong>{summary.validation.existingRatesIncreased}</strong></div>
+            <div><span>Rates decreased</span><strong>{summary.validation.existingRatesLowered}</strong></div>
           </div>
           <div className="validation-line">
             <span>Protected codes changed <b>{summary.validation.trafficProtectedCodesChanged}</b></span>
