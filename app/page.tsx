@@ -1,9 +1,6 @@
 "use client";
 
-import { ChangeEvent, CSSProperties, DragEvent, useEffect, useMemo, useRef, useState } from "react";
-
-const vlStatLabel: CSSProperties = { fontSize: "10px", letterSpacing: "0.06em", textTransform: "uppercase", color: "#6b7a70" };
-const vlStatValue: CSSProperties = { fontSize: "22px", fontWeight: 700, color: "#1f2a24" };
+import { ChangeEvent, DragEvent, useEffect, useMemo, useRef, useState } from "react";
 
 type Variant = "sd" | "convo";
 
@@ -603,20 +600,23 @@ function VariantWorkspace({ variant }: { variant: Variant }) {
 
         {vlSummary && (
           <div aria-live="polite" style={{ marginTop: "20px" }}>
-            <div style={{ display: "grid", gridTemplateColumns: "repeat(4, 1fr)", gap: "14px", marginBottom: "18px" }}>
-              <div><div style={vlStatLabel}>Codes priced</div><div style={vlStatValue}>{vlSummary.codesPriced.toLocaleString()}</div></div>
-              <div><div style={vlStatLabel}>Markup</div><div style={vlStatValue}>{vlSummary.markupPercent ? `${vlSummary.markupPercent}%` : "None"}</div></div>
-              <div><div style={vlStatLabel}>Single-vendor</div><div style={vlStatValue}>{vlSummary.singleVendorCodes.toLocaleString()}</div></div>
-              <div><div style={vlStatLabel}>Skipped</div><div style={vlStatValue}>{vlSummary.skippedIncompleteCoverage.toLocaleString()}</div></div>
+            <div className="metrics">
+              <div><span>Codes priced</span><strong>{vlSummary.codesPriced.toLocaleString()}</strong></div>
+              <div><span>Markup</span><strong>{vlSummary.markupPercent ? `${vlSummary.markupPercent}%` : "None"}</strong></div>
+              <div><span>Single-vendor</span><strong>{vlSummary.singleVendorCodes.toLocaleString()}</strong></div>
+              <div><span>Skipped</span><strong>{vlSummary.skippedIncompleteCoverage.toLocaleString()}</strong></div>
             </div>
             {vlDownloadUrl && (
-              <a
-                href={vlDownloadUrl}
-                download={vlDownloadName}
-                style={{ display: "block", width: "100%", boxSizing: "border-box", textAlign: "center", padding: "14px 18px", borderRadius: "11px", background: "#12321f", color: "#ffffff", textDecoration: "none", fontWeight: 700, fontSize: "13px" }}
-              >
-                Download {copy.short} vendor LCR 2 CSV
-              </a>
+              <div style={{ marginTop: "18px", clear: "both" }}>
+                <a
+                  className="download-button"
+                  href={vlDownloadUrl}
+                  download={vlDownloadName}
+                  style={{ display: "block", width: "100%", gridColumn: "auto", gridRow: "auto", position: "static", boxSizing: "border-box" }}
+                >
+                  Download {copy.short} vendor LCR 2 CSV
+                </a>
+              </div>
             )}
           </div>
         )}
