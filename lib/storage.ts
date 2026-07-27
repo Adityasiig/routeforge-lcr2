@@ -14,6 +14,28 @@ export type VendorMetadata = {
   uploadedAt: string;
 };
 
+export type VendorSummary = {
+  id: string;
+  originalName: string;
+  size: number;
+  rows: number;
+  uploadedAt: string;
+};
+
+// Result of a partial-success upload: the good decks are saved, and each file
+// that failed validation (or was a duplicate / over the limit) is reported with
+// a human-readable reason so the UI can list exactly what was skipped.
+export type VendorUploadResult = {
+  vendors: VendorSummary[];
+  saved: string[];
+  skipped: { name: string; reason: string }[];
+};
+
+function describeUploadError(error: unknown): string {
+  if (error instanceof DeckError) return error.message;
+  return "The file could not be read as a valid rate deck.";
+}
+
 const dataRoot = process.env.DATA_DIR || path.join(/*turbopackIgnore: true*/ process.cwd(), ".data");
 
 // Pre-multitenant storage locations, kept only as one-time migration sources.
@@ -135,10 +157,40 @@ export async function replaceVendors(
   entityId: string,
   variant: DeckVariant,
   files: { name: string; size: number; text: string }[],
-) {
-  const validated = files.map((file) => ({ ...file, ...validateUpload(file.text) }));
+): Promise<VendorUploadResult> {
+  const incomingNames = new Set<string>();
+  const skipped: { name: string; reason: string }[] = [];
+  const accepted: { name: string; size: number; text: string; rows: number }[] = [];
+
+  // Validate every file independently; collect the good ones, report the rest.
+  for (const file of files) {
+    const normalizedName = file.name.trim().toLowerCase();
+    let rows: number;
+    try {
+      ({ rows } = validateUpload(file.text));
+    } catch (error) {
+      skipped.push({ name: file.name, reason: describeUploadError(error) });
+      continue;
+    }
+    if (incomingNames.has(normalizedName)) {
+      skipped.push({ name: file.name, reason: "The same file name was selected more than once." });
+      continue;
+    }
+    if (accepted.length >= 100) {
+      skipped.push({ name: file.name, reason: "A saved vendor set can hold at most 100 decks." });
+      continue;
+    }
+    incomingNames.add(normalizedName);
+    accepted.push({ name: file.name, size: file.size, text: file.text, rows });
+  }
+
+  // Never wipe the existing set when nothing valid came through.
+  if (!accepted.length) {
+    return { vendors: await listVendors(entityId, variant), saved: [], skipped };
+  }
+
   const previous = await readMetadata(entityId, variant);
-  const metadata: VendorMetadata[] = validated.map((file) => {
+  const metadata: VendorMetadata[] = accepted.map((file) => {
     const id = randomUUID();
     return {
       id,
@@ -151,55 +203,77 @@ export async function replaceVendors(
   });
   const { vendorDirectory } = await ensureStorage(entityId, variant);
   await Promise.all(
-    metadata.map((vendor, index) => writeFile(path.join(vendorDirectory, vendor.storedName), validated[index].text, "utf8")),
+    metadata.map((vendor, index) => writeFile(path.join(vendorDirectory, vendor.storedName), accepted[index].text, "utf8")),
   );
   await writeMetadata(entityId, variant, metadata);
   await Promise.allSettled(previous.map((vendor) => unlink(path.join(vendorDirectory, vendor.storedName))));
-  return listVendors(entityId, variant);
+  return { vendors: await listVendors(entityId, variant), saved: accepted.map((file) => file.name), skipped };
 }
 
 export async function addVendors(
   entityId: string,
   variant: DeckVariant,
   files: { name: string; size: number; text: string }[],
-) {
-  const validated = files.map((file) => ({ ...file, ...validateUpload(file.text) }));
+): Promise<VendorUploadResult> {
   const previous = await readMetadata(entityId, variant);
-  if (previous.length + validated.length > 100) throw new DeckError("A saved vendor set can contain a maximum of 100 decks.");
-
   const existingNames = new Set(previous.map((vendor) => vendor.originalName.trim().toLowerCase()));
   const incomingNames = new Set<string>();
-  for (const file of validated) {
+  const skipped: { name: string; reason: string }[] = [];
+  const accepted: { name: string; size: number; text: string; rows: number }[] = [];
+  let total = previous.length;
+
+  // Validate every file independently. A bad file is skipped (with a reason),
+  // not fatal — the remaining good files are still saved.
+  for (const file of files) {
     const normalizedName = file.name.trim().toLowerCase();
-    if (existingNames.has(normalizedName)) {
-      throw new DeckError(`${file.name} is already saved. Remove the existing copy before adding an updated file with the same name.`);
+    let rows: number;
+    try {
+      ({ rows } = validateUpload(file.text));
+    } catch (error) {
+      skipped.push({ name: file.name, reason: describeUploadError(error) });
+      continue;
     }
-    if (incomingNames.has(normalizedName)) throw new DeckError(`${file.name} was selected more than once.`);
+    if (existingNames.has(normalizedName)) {
+      skipped.push({ name: file.name, reason: "A deck with this name is already saved — remove it first to replace it." });
+      continue;
+    }
+    if (incomingNames.has(normalizedName)) {
+      skipped.push({ name: file.name, reason: "The same file name was selected more than once." });
+      continue;
+    }
+    if (total >= 100) {
+      skipped.push({ name: file.name, reason: "The saved vendor set is full (100 decks maximum)." });
+      continue;
+    }
     incomingNames.add(normalizedName);
+    total += 1;
+    accepted.push({ name: file.name, size: file.size, text: file.text, rows });
   }
 
-  const additions: VendorMetadata[] = validated.map((file) => {
-    const id = randomUUID();
-    return {
-      id,
-      originalName: file.name,
-      storedName: `${id}.csv`,
-      size: file.size,
-      rows: file.rows,
-      uploadedAt: new Date().toISOString(),
-    };
-  });
-  const { vendorDirectory } = await ensureStorage(entityId, variant);
-  await Promise.all(
-    additions.map((vendor, index) => writeFile(path.join(vendorDirectory, vendor.storedName), validated[index].text, "utf8")),
-  );
-  try {
-    await writeMetadata(entityId, variant, [...previous, ...additions]);
-  } catch (error) {
-    await Promise.allSettled(additions.map((vendor) => unlink(path.join(vendorDirectory, vendor.storedName))));
-    throw error;
+  if (accepted.length) {
+    const additions: VendorMetadata[] = accepted.map((file) => {
+      const id = randomUUID();
+      return {
+        id,
+        originalName: file.name,
+        storedName: `${id}.csv`,
+        size: file.size,
+        rows: file.rows,
+        uploadedAt: new Date().toISOString(),
+      };
+    });
+    const { vendorDirectory } = await ensureStorage(entityId, variant);
+    await Promise.all(
+      additions.map((vendor, index) => writeFile(path.join(vendorDirectory, vendor.storedName), accepted[index].text, "utf8")),
+    );
+    try {
+      await writeMetadata(entityId, variant, [...previous, ...additions]);
+    } catch (error) {
+      await Promise.allSettled(additions.map((vendor) => unlink(path.join(vendorDirectory, vendor.storedName))));
+      throw error;
+    }
   }
-  return listVendors(entityId, variant);
+  return { vendors: await listVendors(entityId, variant), saved: accepted.map((file) => file.name), skipped };
 }
 
 export async function removeVendor(entityId: string, variant: DeckVariant, id: string) {

@@ -201,6 +201,7 @@ function VariantWorkspace({ variant }: { variant: Variant }) {
   const [building, setBuilding] = useState(false);
   const [buildStatusText, setBuildStatusText] = useState("");
   const [notice, setNotice] = useState<{ type: "error" | "success"; text: string } | null>(null);
+  const [skippedUploads, setSkippedUploads] = useState<{ name: string; reason: string }[]>([]);
   const [summary, setSummary] = useState<Summary | null>(null);
   const [downloadUrl, setDownloadUrl] = useState<string | null>(null);
   const [downloadName, setDownloadName] = useState(`Customer_USA_${copy.short.toUpperCase()}_LCR2_Rate_Deck.csv`);
@@ -241,6 +242,7 @@ function VariantWorkspace({ variant }: { variant: Variant }) {
     if (operation === "replace" && vendors.length && !window.confirm(`Replace all ${vendors.length} saved ${copy.short} vendor decks with the selected file${vendorFiles.length === 1 ? "" : "s"}?`)) return;
     setSavingOperation(operation);
     setNotice(null);
+    setSkippedUploads([]);
     const form = new FormData();
     form.append("variant", variant);
     form.append("operation", operation);
@@ -250,14 +252,28 @@ function VariantWorkspace({ variant }: { variant: Variant }) {
       const payload = await response.json();
       if (!response.ok) throw new Error(payload.error || "Vendor decks could not be saved.");
       setVendors(payload.vendors);
-      const uploadedCount = vendorFiles.length;
+      const savedCount: number = Array.isArray(payload.saved) ? payload.saved.length : 0;
+      const skipped: { name: string; reason: string }[] = Array.isArray(payload.skipped) ? payload.skipped : [];
       setVendorFiles([]);
-      setNotice({
-        type: "success",
-        text: operation === "add"
-          ? `Added ${uploadedCount} ${copy.short} vendor deck${uploadedCount === 1 ? "" : "s"}. ${payload.vendors.length} total now saved.`
-          : `Replaced the ${copy.short} vendor set. ${payload.vendors.length} vendor deck${payload.vendors.length === 1 ? " is" : "s are"} now saved.`,
-      });
+      // Surface the rejected files in a popup so nothing fails silently.
+      if (skipped.length) setSkippedUploads(skipped);
+
+      const skipTail = skipped.length ? ` ${skipped.length} file${skipped.length === 1 ? " was" : "s were"} skipped — see details.` : "";
+      if (savedCount === 0) {
+        setNotice({
+          type: "error",
+          text: skipped.length
+            ? `No files were saved — all ${skipped.length} file${skipped.length === 1 ? "" : "s"} were skipped. See details.`
+            : `No ${copy.short} vendor decks were saved.`,
+        });
+      } else {
+        setNotice({
+          type: "success",
+          text: operation === "add"
+            ? `Added ${savedCount} ${copy.short} vendor deck${savedCount === 1 ? "" : "s"}. ${payload.vendors.length} total now saved.${skipTail}`
+            : `Replaced the ${copy.short} vendor set with ${savedCount} deck${savedCount === 1 ? "" : "s"}. ${payload.vendors.length} now saved.${skipTail}`,
+        });
+      }
     } catch (error) {
       setNotice({ type: "error", text: error instanceof Error ? error.message : "Vendor decks could not be saved." });
     } finally {
@@ -411,6 +427,43 @@ function VariantWorkspace({ variant }: { variant: Variant }) {
       </div>
 
       {notice && <div className={`notice ${notice.type}`} role={notice.type === "error" ? "alert" : "status"}>{notice.text}</div>}
+
+      {skippedUploads.length > 0 && (
+        <div
+          role="dialog"
+          aria-modal="true"
+          aria-label="Skipped files"
+          onClick={() => setSkippedUploads([])}
+          style={{ position: "fixed", inset: 0, background: "rgba(9,16,13,0.55)", display: "grid", placeItems: "center", padding: "20px", zIndex: 1000 }}
+        >
+          <div
+            onClick={(event) => event.stopPropagation()}
+            style={{ background: "var(--card)", color: "var(--ink)", borderRadius: "16px", boxShadow: "var(--shadow)", width: "100%", maxWidth: "540px", maxHeight: "80vh", overflow: "auto", padding: "26px" }}
+          >
+            <h2 style={{ margin: "0 0 6px", fontFamily: "Georgia, serif", fontWeight: 500, fontSize: "23px", letterSpacing: "-.025em" }}>
+              {skippedUploads.length} file{skippedUploads.length === 1 ? "" : "s"} skipped
+            </h2>
+            <p style={{ margin: "0 0 18px", color: "var(--muted)", fontSize: "12px", lineHeight: 1.55 }}>
+              These files failed validation and were not uploaded. Every other file was saved.
+            </p>
+            <ul style={{ listStyle: "none", margin: 0, padding: 0, display: "grid", gap: "9px" }}>
+              {skippedUploads.map((file, index) => (
+                <li key={`${file.name}-${index}`} style={{ border: "1px solid var(--line)", borderRadius: "10px", padding: "11px 13px", background: "#fff" }}>
+                  <div style={{ fontWeight: 700, fontSize: "13px", wordBreak: "break-all" }}>{file.name}</div>
+                  <div style={{ color: "#8f3513", fontSize: "12px", marginTop: "3px", lineHeight: 1.5 }}>{file.reason}</div>
+                </li>
+              ))}
+            </ul>
+            <button
+              type="button"
+              onClick={() => setSkippedUploads([])}
+              style={{ marginTop: "20px", width: "100%", background: "var(--ink)", color: "white", border: 0, borderRadius: "10px", padding: "13px 18px", fontWeight: 700, cursor: "pointer" }}
+            >
+              Got it
+            </button>
+          </div>
+        </div>
+      )}
 
       <section className="workspace-grid">
         <article className="panel vendor-panel">

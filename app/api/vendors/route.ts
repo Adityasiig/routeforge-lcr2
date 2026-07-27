@@ -29,15 +29,34 @@ export async function POST(request: Request) {
     if (!isDeckVariant(variant)) throw new DeckError("Choose either the SD or Convo rate-deck variant.");
     const files = form.getAll("files").filter((entry): entry is File => entry instanceof File);
     if (!files.length) return NextResponse.json({ error: "Choose at least one vendor CSV." }, { status: 400 });
-    if (files.length > 100) return NextResponse.json({ error: "A maximum of 100 vendor decks can be saved at once." }, { status: 400 });
-    const decks = await Promise.all(files.map(async (file) => {
-      if (!file.name.toLowerCase().endsWith(".csv")) throw new DeckError(`${file.name} is not a CSV file.`);
-      if (file.size > 100 * 1024 * 1024) throw new DeckError(`${file.name} exceeds the 100 MB limit.`);
-      return { name: file.name, size: file.size, text: await file.text() };
-    }));
+
+    // Per-file pre-checks (extension / size). A file that fails is skipped with
+    // a reason rather than aborting the whole upload; good files continue on to
+    // content validation and are saved.
+    const preSkipped: { name: string; reason: string }[] = [];
+    const decks: { name: string; size: number; text: string }[] = [];
+    for (const file of files) {
+      if (!file.name.toLowerCase().endsWith(".csv")) {
+        preSkipped.push({ name: file.name, reason: "Not a .csv file." });
+        continue;
+      }
+      if (file.size > 100 * 1024 * 1024) {
+        preSkipped.push({ name: file.name, reason: "Larger than the 100 MB per-file limit." });
+        continue;
+      }
+      decks.push({ name: file.name, size: file.size, text: await file.text() });
+    }
+
     const operation = form.get("operation") === "replace" ? "replace" : "add";
-    const vendors = operation === "replace" ? await replaceVendors(account.id, variant, decks) : await addVendors(account.id, variant, decks);
-    return NextResponse.json({ vendors, operation });
+    const result = operation === "replace"
+      ? await replaceVendors(account.id, variant, decks)
+      : await addVendors(account.id, variant, decks);
+    return NextResponse.json({
+      vendors: result.vendors,
+      operation,
+      saved: result.saved,
+      skipped: [...preSkipped, ...result.skipped],
+    });
   } catch (error) {
     const message = error instanceof DeckError ? error.message : "Vendor decks could not be saved.";
     return NextResponse.json({ error: message }, { status: error instanceof DeckError ? 400 : 500 });
