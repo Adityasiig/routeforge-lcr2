@@ -7,7 +7,7 @@ import { pipeline } from "node:stream/promises";
 import type { ReadableStream as WebReadableStream } from "node:stream/web";
 import path from "node:path";
 import { DeckError, type BuildOptions, type BuildSummary, type VendorLcr2Options } from "./lcr2";
-import { getDataRoot } from "./storage";
+import { getDataRoot, safeEntityId } from "./storage";
 import type { DeckVariant } from "./variants";
 
 // NOTE: exceljs is used only by the background worker (workers/build-job.mjs),
@@ -46,14 +46,19 @@ type BuildJobManifest = {
   createdAt: string;
 };
 
-const jobsRoot = path.join(getDataRoot(), "build-jobs");
 const JOB_ID_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
 const STALE_RUNNING_MS = 30 * 60 * 1000;
 const EXPIRED_JOB_MS = 24 * 60 * 60 * 1000;
 
-function jobPaths(jobId: string) {
+// Build jobs live under each entity, so one tenant's active-build limit,
+// queue, and outputs are fully isolated from every other tenant.
+function jobsRootFor(entityId: string) {
+  return path.join(getDataRoot(), "entities", safeEntityId(entityId), "build-jobs");
+}
+
+function jobPaths(entityId: string, jobId: string) {
   if (!JOB_ID_PATTERN.test(jobId)) throw new DeckError("The build job identifier is invalid.");
-  const directory = path.join(jobsRoot, jobId);
+  const directory = path.join(jobsRootFor(entityId), jobId);
   return {
     directory,
     statusPath: path.join(directory, "status.json"),
@@ -87,7 +92,8 @@ async function readStatusFile(statusPath: string): Promise<BuildJobStatus | null
   }
 }
 
-async function findActiveJob() {
+async function findActiveJob(entityId: string) {
+  const jobsRoot = jobsRootFor(entityId);
   await mkdir(jobsRoot, { recursive: true });
   const entries = await readdir(jobsRoot, { withFileTypes: true });
   for (const entry of entries) {
@@ -106,7 +112,8 @@ async function findActiveJob() {
   return null;
 }
 
-async function cleanupExpiredJobs() {
+async function cleanupExpiredJobs(entityId: string) {
+  const jobsRoot = jobsRootFor(entityId);
   await mkdir(jobsRoot, { recursive: true });
   const entries = await readdir(jobsRoot, { withFileTypes: true });
   await Promise.allSettled(entries.map(async (entry) => {
@@ -147,6 +154,7 @@ function launchWorker(manifestPath: string, statusPath: string) {
 }
 
 export async function createBuildJob(input: {
+  entityId: string;
   variant: DeckVariant;
   filename: string;
   kind?: BuildJobKind;
@@ -160,12 +168,12 @@ export async function createBuildJob(input: {
   if (kind === "lcr2" && (!input.customer || !input.traffic)) {
     throw new DeckError("A customer deck and a traffic file are required for this build.");
   }
-  await cleanupExpiredJobs();
-  const active = await findActiveJob();
+  await cleanupExpiredJobs(input.entityId);
+  const active = await findActiveJob(input.entityId);
   if (active) throw new DeckError(`Build ${active.jobId.slice(0, 8)} is already running. Wait for it to finish before starting another build.`);
 
   const jobId = randomUUID();
-  const { directory, statusPath, outputPath } = jobPaths(jobId);
+  const { directory, statusPath, outputPath } = jobPaths(input.entityId, jobId);
   await mkdir(directory, { recursive: true });
   const manifestPath = path.join(directory, "manifest.json");
   const createdAt = new Date().toISOString();
@@ -210,16 +218,16 @@ export async function createBuildJob(input: {
   return status;
 }
 
-export async function getBuildJobStatus(jobId: string) {
-  const { statusPath } = jobPaths(jobId);
+export async function getBuildJobStatus(entityId: string, jobId: string) {
+  const { statusPath } = jobPaths(entityId, jobId);
   const status = await readStatusFile(statusPath);
   if (!status) throw new DeckError("This build job was not found or has expired.");
   return status;
 }
 
-export async function getCompletedBuild(jobId: string) {
-  const { outputPath } = jobPaths(jobId);
-  const status = await getBuildJobStatus(jobId);
+export async function getCompletedBuild(entityId: string, jobId: string) {
+  const { outputPath } = jobPaths(entityId, jobId);
+  const status = await getBuildJobStatus(entityId, jobId);
   if (status.state !== "completed") throw new DeckError("This build is not ready to download.");
   return { status, csv: await readFile(outputPath, "utf8") };
 }

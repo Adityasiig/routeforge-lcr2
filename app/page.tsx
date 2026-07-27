@@ -658,6 +658,17 @@ function VariantWorkspace({ variant }: { variant: Variant }) {
 
 export default function Home() {
   const [activeVariant, setActiveVariant] = useState<Variant>("sd");
+  const [entityLabel, setEntityLabel] = useState<string>("");
+
+  // Identify which entity (account) is logged in, for the topbar.
+  useEffect(() => {
+    let cancelled = false;
+    fetch("/api/me", { cache: "no-store" })
+      .then((response) => (response.ok ? response.json() : null))
+      .then((data) => { if (!cancelled && data?.label) setEntityLabel(String(data.label)); })
+      .catch(() => { /* ignore — topbar simply omits the label */ });
+    return () => { cancelled = true; };
+  }, []);
 
   const logout = async () => {
     try { await fetch("/api/logout", { method: "POST" }); } catch { /* ignore */ }
@@ -670,6 +681,11 @@ export default function Home() {
         <a className="brand" href="#top" aria-label="RouteForge home"><span className="brand-mark">RF</span><span>RouteForge</span></a>
         <div className="topbar-meta">
           <span className="live-dot" aria-hidden="true" />USA NPANXX · LCR 2
+          {entityLabel && (
+            <span style={{ marginLeft: "14px", paddingLeft: "14px", borderLeft: "1px solid rgba(0,0,0,0.15)" }}>
+              {entityLabel}
+            </span>
+          )}
           <button
             type="button"
             onClick={logout}

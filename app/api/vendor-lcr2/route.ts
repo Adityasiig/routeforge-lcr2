@@ -4,6 +4,7 @@ import { DeckError } from "@/lib/lcr2";
 import { createBuildJob } from "@/lib/build-jobs";
 import { getVendorDeckPaths } from "@/lib/storage";
 import { isDeckVariant, variantLabel } from "@/lib/variants";
+import { resolveEntityFromRequest } from "@/lib/auth";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
@@ -11,6 +12,8 @@ export const dynamic = "force-dynamic";
 export async function POST(request: Request) {
   const requestId = randomUUID().slice(0, 8);
   try {
+    const account = await resolveEntityFromRequest(request);
+    if (!account) return NextResponse.json({ error: "Authentication required." }, { status: 401 });
     let body: { variant?: unknown; markup?: unknown; singleVendor?: unknown; decimals?: unknown } = {};
     try {
       body = await request.json();
@@ -28,11 +31,12 @@ export async function POST(request: Request) {
     const singleVendor = body.singleVendor === "require2" ? "require2" : "fallback";
     const decimals = body.decimals === undefined || body.decimals === null || body.decimals === "" ? undefined : Number(body.decimals);
 
-    const vendorPaths = await getVendorDeckPaths(variant);
+    const vendorPaths = await getVendorDeckPaths(account.id, variant);
     if (!vendorPaths.length) throw new DeckError(`Save at least one ${variantLabel(variant)} vendor deck first.`);
 
     const filename = `Vendor_LCR2_USA_${variantLabel(variant).toUpperCase()}_Rate_Deck.csv`;
     const job = await createBuildJob({
+      entityId: account.id,
       variant,
       filename,
       kind: "vendor-lcr2",

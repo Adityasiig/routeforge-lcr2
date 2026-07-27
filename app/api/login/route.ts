@@ -16,15 +16,16 @@ export async function POST(request: Request) {
 
   if (!authConfigured()) {
     return NextResponse.json(
-      { error: "Login is not configured on the server. Set AUTH_USERNAME, AUTH_PASSWORD and AUTH_SECRET." },
+      { error: "Login is not configured on the server. Set AUTH_ACCOUNTS (or AUTH_USERNAME/AUTH_PASSWORD) and AUTH_SECRET." },
       { status: 500 },
     );
   }
-  if (!username || !password || !(await verifyCredentials(username, password))) {
+  const account = username && password ? await verifyCredentials(username, password) : null;
+  if (!account) {
     return NextResponse.json({ error: "Invalid username or password." }, { status: 401 });
   }
 
-  const token = await signSession(username);
+  const token = await signSession(account.id);
   const response = NextResponse.json({ ok: true });
   response.cookies.set(SESSION_COOKIE, token, {
     httpOnly: true,

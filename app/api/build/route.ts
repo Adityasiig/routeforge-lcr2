@@ -4,6 +4,7 @@ import { DeckError } from "@/lib/lcr2";
 import { createBuildJob } from "@/lib/build-jobs";
 import { getVendorDeckPaths } from "@/lib/storage";
 import { isDeckVariant, variantLabel } from "@/lib/variants";
+import { resolveEntityFromRequest } from "@/lib/auth";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
@@ -16,6 +17,8 @@ function safeFilename(name: string, variant: "sd" | "convo") {
 export async function POST(request: Request) {
   const requestId = randomUUID().slice(0, 8);
   try {
+    const account = await resolveEntityFromRequest(request);
+    if (!account) return NextResponse.json({ error: "Authentication required." }, { status: 401 });
     const form = await request.formData();
     const variant = form.get("variant");
     if (!isDeckVariant(variant)) throw new DeckError("Choose either the SD or Convo rate-deck variant.");
@@ -42,8 +45,9 @@ export async function POST(request: Request) {
     // never hits its ~100s timeout. We only look up the saved vendor paths (cheap),
     // then stream the raw uploads to disk inside createBuildJob. All parsing
     // (ExcelJS / CSV) and the LCR 2 computation happen in the background worker.
-    const vendorPaths = await getVendorDeckPaths(variant);
+    const vendorPaths = await getVendorDeckPaths(account.id, variant);
     const job = await createBuildJob({
+      entityId: account.id,
       variant,
       filename,
       customer,

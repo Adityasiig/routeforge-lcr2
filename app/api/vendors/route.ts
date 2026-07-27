@@ -2,15 +2,18 @@ import { NextResponse } from "next/server";
 import { DeckError } from "@/lib/lcr2";
 import { addVendors, listVendors, replaceVendors } from "@/lib/storage";
 import { isDeckVariant } from "@/lib/variants";
+import { resolveEntityFromRequest } from "@/lib/auth";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
 
 export async function GET(request: Request) {
   try {
+    const account = await resolveEntityFromRequest(request);
+    if (!account) return NextResponse.json({ error: "Authentication required." }, { status: 401 });
     const variant = new URL(request.url).searchParams.get("variant");
     if (!isDeckVariant(variant)) throw new DeckError("Choose either the SD or Convo rate-deck variant.");
-    return NextResponse.json({ vendors: await listVendors(variant) }, { headers: { "Cache-Control": "no-store" } });
+    return NextResponse.json({ vendors: await listVendors(account.id, variant) }, { headers: { "Cache-Control": "no-store" } });
   } catch (error) {
     const message = error instanceof DeckError ? error.message : "Saved vendor decks could not be loaded.";
     return NextResponse.json({ error: message }, { status: error instanceof DeckError ? 400 : 500 });
@@ -19,6 +22,8 @@ export async function GET(request: Request) {
 
 export async function POST(request: Request) {
   try {
+    const account = await resolveEntityFromRequest(request);
+    if (!account) return NextResponse.json({ error: "Authentication required." }, { status: 401 });
     const form = await request.formData();
     const variant = form.get("variant");
     if (!isDeckVariant(variant)) throw new DeckError("Choose either the SD or Convo rate-deck variant.");
@@ -31,7 +36,7 @@ export async function POST(request: Request) {
       return { name: file.name, size: file.size, text: await file.text() };
     }));
     const operation = form.get("operation") === "replace" ? "replace" : "add";
-    const vendors = operation === "replace" ? await replaceVendors(variant, decks) : await addVendors(variant, decks);
+    const vendors = operation === "replace" ? await replaceVendors(account.id, variant, decks) : await addVendors(account.id, variant, decks);
     return NextResponse.json({ vendors, operation });
   } catch (error) {
     const message = error instanceof DeckError ? error.message : "Vendor decks could not be saved.";
